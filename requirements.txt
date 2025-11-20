@@ -1,0 +1,4 @@
+docker
+PyYAML
+requests
+python-dotenv

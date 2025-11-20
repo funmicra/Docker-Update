@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pytest_cache/
+.venv/
+env/
+venv/
+
+# Environment files (secrets stay off-repo)
+.env
+*.env
+
+# Logs + temp artifacts
+logs/
+*.log
+*.tmp
+
+# Docker
+*.pid
+docker-auto-update/
+docker-data/
+docker-compose.override.yml
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor state
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# CI/CD artifacts
+dist/
+build/
+*.tar.gz
+
+# Virtual environments created by GitHub runner
+.python/

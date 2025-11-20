@@ -1,0 +1,15 @@
+services:
+  docker-auto-update:
+    image: funmicra/docker_update:latest
+    container_name: Docker-Update
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - CHECK_INTERVAL=${CHECK_INTERVAL}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - logs:/app/logs        # <—— Persistent log mount
+
+volumes:
+  logs:
