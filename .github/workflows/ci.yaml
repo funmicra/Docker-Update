@@ -53,5 +53,5 @@ jobs:
             --restart unless-stopped \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v logs:/app/logs \
-            --env-file /opt/auto-update/.env \
+            --env-file .env \
             funmicra/docker-update:latest
