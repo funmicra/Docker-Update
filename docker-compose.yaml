@@ -16,6 +16,6 @@ services:
 #   logs:
 
 networks:
-  App-Network:
+  default:
     external: true
-    name: App-Network
+    name: Apps-Network
