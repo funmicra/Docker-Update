@@ -31,8 +31,6 @@ jobs:
           push: true
           tags: |
             funmicra/docker-update:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           retry: 3                   # retry on transient errors
 
       - name: Pull new image

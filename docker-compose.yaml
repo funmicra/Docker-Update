@@ -1,6 +1,6 @@
 services:
   docker-auto-update:
-    image: funmicra/docker_update:latest
+    image: funmicra/docker-update:latest
     container_name: Docker-Update
     restart: unless-stopped
     environment:
