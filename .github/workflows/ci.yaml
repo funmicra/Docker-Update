@@ -38,12 +38,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Pull new image
-        run: docker pull funmicra/Docker-Update:latest
+        run: docker pull funmicra/docker-update:latest
 
       - name: Stop old container
         run: |
-          docker stop docker-auto-update || true
-          docker rm docker-auto-update || true
+          docker stop docker-update || true
+          docker rm docker-update || true
 
       - name: Run updated container
         run: |
@@ -53,4 +53,4 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v logs:/app/logs \
             --env-file /opt/auto-update/.env \
-            funmicra/docker-auto-update:latest
+            funmicra/docker-update:latest
