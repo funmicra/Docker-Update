@@ -34,7 +34,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # optional: serialize uploads to reduce 400 errors
-          max-concurrent-uploads: 1
+
 
       - name: Pull new image
         run: docker pull funmicra/docker-update:latest
