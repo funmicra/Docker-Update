@@ -16,7 +16,7 @@ load_dotenv()
 # Configuration
 # =========================
 CFG = {
-    "check_interval": os.getenv("CHECK_INTERVAL", 3600),  # seconds
+    "check_interval": int(os.getenv("CHECK_INTERVAL", 3600)),  # seconds
     "skip_containers": [],
     "notifications": {
         "enabled": os.getenv("NOTIFY_ENABLED", "True") == "True",
@@ -34,21 +34,15 @@ CFG = {
 # =========================
 # Logging setup
 # =========================
-import logging
-from logging.handlers import RotatingFileHandler
-import os
-
 LOG_PATH = "/app/logs/docker-auto-update.log"
 os.makedirs("/app/logs", exist_ok=True)
 
 logger = logging.getLogger("AutoUpdate")
 logger.setLevel(logging.INFO)
 
-# Console output
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 
-# File rotation: 5 MB × 5 backups
 file_handler = RotatingFileHandler(
     LOG_PATH,
     maxBytes=5_000_000,
@@ -56,15 +50,12 @@ file_handler = RotatingFileHandler(
 )
 file_handler.setLevel(logging.INFO)
 
-# Formatter
 fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console.setFormatter(fmt)
 file_handler.setFormatter(fmt)
 
-# Register handlers
 logger.addHandler(console)
 logger.addHandler(file_handler)
-
 
 # =========================
 # Docker client
@@ -111,15 +102,14 @@ def notify(container_name, event_type="info", image=None, extra=None):
 # Update container function
 # =========================
 last_check_time = {}
+
 def update_container(container):
     global last_check_time
     name = container.name
 
-    # Only check once per interval
     now = time.time()
     if name in last_check_time and now - last_check_time[name] < CFG["check_interval"]:
         return
-    
     last_check_time[name] = now
 
     labels = container.attrs['Config'].get('Labels', {})
@@ -157,7 +147,6 @@ def update_container(container):
                 logger.info(f"{name} is part of docker-compose project '{compose_project}' service '{compose_service}'. Updating...")
                 notify(name, "update", image_name)
 
-                # Pull latest image
                 cmd_pull = ["docker-compose", "-p", compose_project, "pull", compose_service]
                 result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
                 if result_pull.returncode != 0:
@@ -165,7 +154,6 @@ def update_container(container):
                     notify(name, "error", extra=result_pull.stderr)
                     return
 
-                # Restart service
                 cmd_up = ["docker-compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
                 result_up = subprocess.run(cmd_up, capture_output=True, text=True)
                 if result_up.returncode == 0:
