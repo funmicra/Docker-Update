@@ -43,3 +43,4 @@ jobs:
       - name: Run updated container
         run: |
           docker compose up -d
+          docker exec Docker-Update python3 /app/docker_auto_update.py
