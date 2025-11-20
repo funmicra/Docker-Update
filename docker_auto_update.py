@@ -16,7 +16,7 @@ load_dotenv()
 # Configuration
 # =========================
 CFG = {
-    "check_interval": int(os.getenv("CHECK_INTERVAL", 3600)),  # seconds
+    "check_interval": os.getenv("CHECK_INTERVAL", 3600),  # seconds
     "skip_containers": [],
     "notifications": {
         "enabled": os.getenv("NOTIFY_ENABLED", "True") == "True",
