@@ -10,10 +10,10 @@ services:
       - CHECK_INTERVAL=${CHECK_INTERVAL}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - logs:/app/logs
+      - /var/log/docker-updater:/app/logs
 
-volumes:
-  logs:
+# volumes:
+#   logs:
 
 networks:
   App-Network:
