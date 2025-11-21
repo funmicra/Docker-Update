@@ -37,8 +37,8 @@ jobs:
 
       - name: Stop old container
         run: |
-          docker stop docker-update || true
-          docker rm docker-update || true
+          docker stop Docker-Update || true
+          docker rm Docker-Update || true
 
       - name: Run updated container
         run: |
