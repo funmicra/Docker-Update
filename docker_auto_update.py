@@ -27,7 +27,7 @@ CFG = {
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID")
     },
     "logging": {
-        "path": os.getenv("LOG_PATH") or /var/log/Docker-Update.log,
+        "path": os.getenv("LOG_PATH") or "/var/log/Docker-Update.log",
         "max_bytes": 10485760,
         "backup_count": 5
     }
