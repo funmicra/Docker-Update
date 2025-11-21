@@ -51,8 +51,8 @@ docker run -d \
   -e TELEGRAM_BOT_TOKEN=your_bot_token \
   -e TELEGRAM_CHAT_ID=your_chat_id \
   -e CHECK_INTERVAL=3600 \
-  --name docker-update \
-  docker-auto-update
+  --name Docker-Update \
+  funmicra/docker-update
 ```
 ---
 ## Running Without Docker
@@ -93,15 +93,17 @@ To mount logs externally:
 ```bash
 docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /opt/docker-auto-update-logs:/app/logs \
-  docker-auto-update
+  -v /opt/docker-update-logs:/app/logs \
+  funmicra/docker-update
 ```
 ## Folder Structure
 ```bash
 /
-├── docker_auto_update.py
+├── Docker-Update.py
 ├── Dockerfile
 ├── requirements.txt
+├── docker-compose.yaml
+├── .env.example
 └── .github/
     └── workflows/
         └── ci.yml
