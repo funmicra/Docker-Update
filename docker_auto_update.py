@@ -21,7 +21,7 @@ CFG = {
     "check_interval": int(os.getenv("CHECK_INTERVAL") or 3600),
     "skip_containers": [],
     "notifications": {
-        "enabled": to_bool(os.getenv("TELEGRAM", "false")),
+        "enabled": to_bool(os.getenv("TELEGRAM" or "false")),
         "type": "telegram",
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID")
