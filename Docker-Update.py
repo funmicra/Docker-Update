@@ -13,15 +13,13 @@ import argparse
 
 load_dotenv()
 
-parser = argparse.ArgumentParser(description="Docker Auto-Updater")
-parser.add_argument(
-    "--dry-run",
-    action="store_true",
-    help="Simulate updates without pulling images or restarting containers."
-)
+parser = argparse.ArgumentParser()
+parser.add_argument("--dry-run", action="store_true", help="Run in simulation mode (no updates applied)")
+parser.add_argument("--run-once", action="store_true", help="Run a single update cycle and exit")
 args = parser.parse_args()
 
 DRY_RUN = args.dry_run
+RUN_ONCE = args.run_once
 
 # =========================
 # Configuration
@@ -324,14 +322,27 @@ def cleanup_unused_images():
 # =========================
 def main():
     try:
+        containers = client.containers.list()
+        for c in containers:
+            update_container(c)
+
+        cleanup_unused_images()
+
+
+        if RUN_ONCE:
+            logger.info("Run-once mode: exiting after single cycle.")
+            return
+        
         while True:
+            logger.info(f"💤 Sleeping {CFG['check_interval']} seconds…")
+            time.sleep(CFG["check_interval"])
+
             containers = client.containers.list()
             for c in containers:
                 update_container(c)
 
             cleanup_unused_images()
-            logger.info(f"💤 Sleeping {CFG['check_interval']} seconds…")
-            time.sleep(CFG["check_interval"])
+    
     except KeyboardInterrupt:
         logger.info("Exiting Docker auto-update script.")
 
