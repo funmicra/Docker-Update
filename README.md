@@ -40,9 +40,9 @@
 ```
 ---
 ## Running the App via Docker
-1. Build the image
+1. Pull the image
 ```bash
-docker build -t docker-auto-update .
+docker pull funmicra/docker-update
 ```
 2. Run the container
 ```bash
@@ -51,7 +51,6 @@ docker run -d \
   -e TELEGRAM=true \
   -e TELEGRAM_BOT_TOKEN=your_bot_token \
   -e TELEGRAM_CHAT_ID=your_chat_id \
-  -e CHECK_INTERVAL=3600 \
   --name Docker-Update \
   funmicra/docker-update
 ```
