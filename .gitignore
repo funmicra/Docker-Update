@@ -19,7 +19,7 @@ logs/
 
 # Docker
 *.pid
-docker-auto-update/
+docker-update/
 docker-data/
 docker-compose.override.yml
 

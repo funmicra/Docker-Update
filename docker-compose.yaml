@@ -1,5 +1,5 @@
 services:
-  docker-auto-update:
+  Docker-Update:
     image: funmicra/docker-update:latest
     container_name: Docker-Update
     restart: unless-stopped
@@ -11,10 +11,6 @@ services:
       - CHECK_INTERVAL=${CHECK_INTERVAL}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - logs:/app/logs
-
-volumes:
-  logs:
 
 networks:
   default:

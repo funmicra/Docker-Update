@@ -9,8 +9,19 @@ import requests
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
+import argparse
 
 load_dotenv()
+
+parser = argparse.ArgumentParser(description="Docker Auto-Updater")
+parser.add_argument(
+    "--dry-run",
+    action="store_true",
+    help="Simulate updates without pulling images or restarting containers."
+)
+args = parser.parse_args()
+
+DRY_RUN = args.dry_run
 
 # =========================
 # Configuration
@@ -19,7 +30,11 @@ def to_bool(value):
     return str(value).lower() in ("1", "true", "yes", "y", "on")
 
 CFG = {
-    "check_interval": int(os.getenv("CHECK_INTERVAL") or 3600),
+    "check_interval": (
+    int(os.getenv("CHECK_INTERVAL").strip())
+    if os.getenv("CHECK_INTERVAL") and os.getenv("CHECK_INTERVAL").strip().isdigit()
+    else 3600
+    ),
     "skip_containers": [
         c.strip() for c in os.getenv("SKIP_CONTAINERS", "").split(",") if c.strip()
     ],
@@ -35,7 +50,6 @@ CFG = {
         "backup_count": 5
     }
 }
-
 
 # =========================
 # Logging setup
@@ -79,20 +93,52 @@ client = docker.from_env()
 # =========================
 # Telegram notification
 # =========================
-def format_telegram_message(event_type, container_name, image=None, extra=None):
+def format_telegram_message(event_type, container_name=None, image=None, extra=None):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if event_type == "update":
-        return f"🟢 *Update*\n🐳 Container: `{container_name}`\nNew Image: `{image}`\n🕒 Time: {ts}"
-    elif event_type == "up_to_date":
-        return f"✅ *No Update Needed*\n🐳 Container: `{container_name}`\n🕒 Time: {ts}"
-    elif event_type == "error":
-        return f"⚠️ *Error*\n🐳 Container: `{container_name}`\nDetails: `{extra}`\n🕒 Time: {ts}"
-    elif event_type == "cleanup":
-        return f"🧹 *Cleanup*\nReclaimed space: `{extra:.2f} MB`\n🕒 Time: {ts}"
-    else:
-        return f"ℹ️ *Notification*\n🐳 Container: `{container_name}`\n🕒 Time: {ts}"
 
-def notify(container_name, event_type="info", image=None, extra=None):
+    if event_type == "dry_run":
+        return (
+            f"🧪 *DRY RUN MODE*\n"
+            f"🔍 No changes will be applied.\n"
+            f"🕒 Time: {ts}"          
+        )
+
+    if event_type == "update":
+        return (
+            f"🟢 *Update*\n"
+            f"🐳 Container: `{container_name}`\n"
+            f"New Image: `{image}`\n"
+            f"🕒 Time: {ts}"
+        )
+
+    if event_type == "up_to_date":
+        return (
+            f"✅ *No Update Needed*\n"
+            f"🐳 Container: `{container_name}`\n"
+            f"🕒 Time: {ts}"
+        )
+
+    if event_type == "error":
+        return (
+            f"⚠️ *Error*\n"
+            f"🐳 Container: `{container_name}`\n"
+            f"Details: `{extra}`\n"
+            f"🕒 Time: {ts}"
+        )
+
+    if event_type == "cleanup":
+        return (
+            f"🧹 *Cleanup*\n"
+            f"Reclaimed space: `{extra:.2f} MB`\n"
+            f"🕒 Time: {ts}"
+        )
+
+    return (
+        f"ℹ️ *Notification*\n"
+        f"🐳 Container: `{container_name}`\n"
+        f"🕒 Time: {ts}"
+    )
+def notify(container_name=None, event_type="info", image=None, extra=None):
     msg = format_telegram_message(event_type, container_name, image, extra)
     logger.info(msg)
 
@@ -112,6 +158,7 @@ def notify(container_name, event_type="info", image=None, extra=None):
         except Exception as e:
             logger.warning(f"[Telegram] Exception: {e}")
 
+
 # =========================
 # Update container function
 # =========================
@@ -121,10 +168,13 @@ def update_container(container):
     global last_check_time
     name = container.name
 
+    # Rate limiting per container
     now = time.time()
     if name in last_check_time and now - last_check_time[name] < CFG["check_interval"]:
         return
     last_check_time[name] = now
+
+    # Skip-list logic
     if name in CFG["skip_containers"]:
         logger.info(f"Skipping container {name} (in skip list)")
         return
@@ -141,77 +191,117 @@ def update_container(container):
 
     try:
         logger.info(f"Checking {name} ({image_name})...")
-        new_image = client.images.pull(image_name)
-
-        if new_image.id != container.image.id:
-            # ================= STACK =================
-            if stack_name:
-                service_name = f"{stack_name}_{name}"
-                logger.info(f"{name} is part of Swarm stack '{stack_name}'. Updating service...")
-                notify(name, "update", image_name)
-                cmd = ["docker", "service", "update", "--image", image_name, service_name]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode == 0:
-                    logger.info(f"Stack service {service_name} updated successfully.")
-                    notify(service_name, "update", image_name)
-                else:
-                    logger.error(f"Service update failed: {result.stderr}")
-                    notify(service_name, "error", extra=result.stderr)
-                return
-
-            # ================= COMPOSE =================
-            elif compose_project and compose_service:
-                logger.info(f"{name} is part of docker-compose project '{compose_project}' service '{compose_service}'. Updating...")
-                notify(name, "update", image_name)
-
-                cmd_pull = ["docker-compose", "-p", compose_project, "pull", compose_service]
-                result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
-                if result_pull.returncode != 0:
-                    logger.error(f"docker-compose pull failed: {result_pull.stderr}")
-                    notify(name, "error", extra=result_pull.stderr)
-                    return
-
-                cmd_up = ["docker-compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
-                result_up = subprocess.run(cmd_up, capture_output=True, text=True)
-                if result_up.returncode == 0:
-                    logger.info(f"docker-compose service '{compose_service}' updated successfully.")
-                    notify(name, "update", image_name)
-                else:
-                    logger.error(f"docker-compose up failed: {result_up.stderr}")
-                    notify(name, "error", extra=result_up.stderr)
-                return
-
-            # ================= STANDALONE =================
-            else:
-                notify(name, "update", image_name)
-                ports = container.attrs['HostConfig']['PortBindings']
-                env = container.attrs['Config']['Env']
-                volumes = {m['Destination']: {'bind': m['Destination'], 'mode': m.get('Mode', 'rw')}
-                           for m in container.attrs.get('Mounts', []) if "Destination" in m}
-                restart_policy = container.attrs['HostConfig']['RestartPolicy']
-                network = container.attrs['HostConfig']['NetworkMode']
-
-                container.stop()
-                container.remove()
-                client.containers.run(
-                    image_name,
-                    name=name,
-                    detach=True,
-                    ports={k: int(v[0]['HostPort']) for k, v in ports.items()} if ports else None,
-                    environment=env,
-                    volumes=volumes,
-                    restart_policy=restart_policy,
-                    network=network
-                )
-                logger.info(f"{name} updated successfully!")
-                notify(name, "update", image_name)
+        if DRY_RUN:
+            logger.info(f"[DRY-RUN] Would pull latest image for {name}")
+            # simulate "update available"
+            new_image_id = "SIMULATED-ID"
         else:
+            new_image = client.images.pull(image_name)
+            new_image_id = new_image.id
+            
+        # Up-to-date check
+        if not DRY_RUN and new_image_id == container.image.id:
             logger.info(f"{name} is up to date.")
             notify(name, "up_to_date")
+            return
+
+        # If DRY RUN, pretend everything is always update-available
+        logger.info(f"🆕 Update available for {name}")
+        notify(name, "update", image_name)
+
+        # ==================== SWARM ====================
+        if stack_name:
+            service_name = f"{stack_name}_{name}"
+            logger.info(f"{name} is part of Swarm stack '{stack_name}'.")
+
+            if DRY_RUN:
+                logger.info(f"[DRY-RUN] Would run: docker service update --image {image_name} {service_name}")
+                return
+
+            cmd = ["docker", "service", "update", "--image", image_name, service_name]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+
+            if result.returncode == 0:
+                logger.info(f"Stack service {service_name} updated successfully.")
+                notify(service_name, "update", image_name)
+            else:
+                logger.error(f"Service update failed: {result.stderr}")
+                notify(service_name, "error", extra=result.stderr)
+            return
+
+        # ==================== COMPOSE ====================
+        if compose_project and compose_service:
+            logger.info(f"{name} is part of docker-compose project '{compose_project}'.")
+
+            if DRY_RUN:
+                logger.info(f"[DRY-RUN] Would run: docker-compose -p {compose_project} pull {compose_service}")
+                logger.info(f"[DRY-RUN] Would run: docker-compose -p {compose_project} up -d --no-deps {compose_service}")
+                return
+
+            cmd_pull = ["docker-compose", "-p", compose_project, "pull", compose_service]
+            result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
+
+            if result_pull.returncode != 0:
+                logger.error(f"docker-compose pull failed: {result_pull.stderr}")
+                notify(name, "error", extra=result_pull.stderr)
+                return
+
+            cmd_up = ["docker-compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
+            result_up = subprocess.run(cmd_up, capture_output=True, text=True)
+
+            if result_up.returncode == 0:
+                logger.info(f"docker-compose service '{compose_service}' updated successfully.")
+                notify(name, "update", image_name)
+            else:
+                logger.error(f"docker-compose up failed: {result_up.stderr}")
+                notify(name, "error", extra=result_up.stderr)
+            return
+
+        # ==================== STANDALONE ====================
+        ports = container.attrs['HostConfig']['PortBindings']
+        env = container.attrs['Config']['Env']
+        mounts = container.attrs.get('Mounts', [])
+        volumes = {
+            m['Destination']: {
+                'bind': m['Destination'],
+                'mode': m.get('Mode', 'rw')
+            } for m in mounts if "Destination" in m
+        }
+        restart_policy = container.attrs['HostConfig']['RestartPolicy']
+        network = container.attrs['HostConfig']['NetworkMode']
+
+        if DRY_RUN:
+            logger.info(f"[DRY-RUN] Would stop/remove container {name}")
+            logger.info(f"[DRY-RUN] Would recreate {name} with:")
+            logger.info(f"          Image: {image_name}")
+            logger.info(f"          Ports: {ports}")
+            logger.info(f"          Env: {env}")
+            logger.info(f"          Volumes: {volumes}")
+            logger.info(f"          Network: {network}")
+            return
+
+        # Actual update
+        container.stop()
+        container.remove()
+
+        client.containers.run(
+            image_name,
+            name=name,
+            detach=True,
+            ports={k: int(v[0]['HostPort']) for k, v in ports.items()} if ports else None,
+            environment=env,
+            volumes=volumes,
+            restart_policy=restart_policy,
+            network=network
+        )
+
+        logger.info(f"{name} updated successfully!")
+        notify(name, "update", image_name)
 
     except Exception as e:
         logger.error(f"Error updating {name}: {e}")
         notify(name, "error", extra=str(e))
+ 
 
 # =========================
 # Cleanup unused images
@@ -246,4 +336,6 @@ def main():
         logger.info("Exiting Docker auto-update script.")
 
 if __name__ == "__main__":
+    if DRY_RUN:
+        notify(event_type="dry_run")  # global dry-run banner
     main()

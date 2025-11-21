@@ -36,7 +36,8 @@
 | `TELEGRAM_CHAT_ID`   | Telegram chat ID                         | Yes      | —                           |
 | `CHECK_INTERVAL`     | Interval in seconds between image checks | No       | `3600`                      |
 | `SKIP_CONTAINERS`    | Choose containers not to updated         | No       | —                           |
-| `LOG_PATH`           | Path to rotating log file                | No       | `/var/log/Auto-Update.log`  |
+| `TZ`                 | Timezone for correct timing on logs      | No       | UTC                         |
+| `LOG_PATH`           | Path to rotating log file                | No       | `/app/logs`                 |
 ```
 ---
 ## Running the App via Docker
@@ -47,10 +48,11 @@ docker pull funmicra/docker-update
 2. Run the container
 ```bash
 docker run -d \
-  -v /var/run/docker.sock:/var/run/docker.sock \
   -e TELEGRAM=true \
   -e TELEGRAM_BOT_TOKEN=your_bot_token \
   -e TELEGRAM_CHAT_ID=your_chat_id \
+  -e CHECK_INTERVAL=86400 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   --name Docker-Update \
   funmicra/docker-update
 ```
@@ -92,8 +94,7 @@ Log directory default: /app/logs/
 To mount logs externally:
 ```bash
 docker run -d \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /opt/docker-update-logs:/app/logs \
+   -v /path/to/logs:/app/logs \
   funmicra/docker-update
 ```
 ## Folder Structure
