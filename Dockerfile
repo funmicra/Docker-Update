@@ -9,7 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Copy application files
-COPY docker_auto_update.py .
+COPY Docker-Update.py .
 COPY requirements.txt .
 
 # Install Python dependencies
@@ -19,4 +19,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 VOLUME ["/var/run/docker.sock"]
 
 # Default command
-CMD ["python", "docker_auto_update.py"]
+CMD ["python", "Docker-Update.py"]
