@@ -10,8 +10,11 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
 import argparse
+import socket
 
 load_dotenv()
+
+HOSTNAME = socket.gethostname()
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true", help="Run in simulation mode (no updates applied)")
@@ -64,6 +67,12 @@ LOG_PATH = os.path.join(LOG_DIR, "Docker-Update.log")
 
 logger = logging.getLogger("AutoUpdate")
 logger.setLevel(logging.INFO)
+class HostnameFilter(logging.Filter):
+    def filter(self, record):
+        record.hostname = HOSTNAME
+        return True
+
+logger.addFilter(HostnameFilter())
 
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
@@ -75,7 +84,7 @@ file_handler = RotatingFileHandler(
 )
 file_handler.setLevel(logging.INFO)
 
-fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+fmt = logging.Formatter('%(asctime)s - %(levelname)s - [%(hostname)s] - %(message)s')
 console.setFormatter(fmt)
 file_handler.setFormatter(fmt)
 
@@ -93,12 +102,13 @@ client = docker.from_env()
 # =========================
 def format_telegram_message(event_type, container_name=None, image=None, extra=None):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    host_info = f"\n🏠 Host: `{HOSTNAME}`"
 
     if event_type == "dry_run":
         return (
             f"🧪 *DRY RUN MODE*\n"
             f"🔍 No changes will be applied.\n"
-            f"🕒 Time: {ts}"          
+            f"🕒 Time: {ts}{host_info}"       
         )
 
     if event_type == "update":
@@ -106,14 +116,14 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
             f"🟢 *Update*\n"
             f"🐳 Container: `{container_name}`\n"
             f"New Image: `{image}`\n"
-            f"🕒 Time: {ts}"
+            f"🕒 Time: {ts}{host_info}"
         )
 
     if event_type == "up_to_date":
         return (
             f"✅ *No Update Needed*\n"
             f"🐳 Container: `{container_name}`\n"
-            f"🕒 Time: {ts}"
+            f"🕒 Time: {ts}{host_info}"
         )
 
     if event_type == "error":
@@ -121,20 +131,20 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
             f"⚠️ *Error*\n"
             f"🐳 Container: `{container_name}`\n"
             f"Details: `{extra}`\n"
-            f"🕒 Time: {ts}"
+            f"🕒 Time: {ts}{host_info}"
         )
 
     if event_type == "cleanup":
         return (
             f"🧹 *Cleanup*\n"
             f"Reclaimed space: `{extra:.2f} MB`\n"
-            f"🕒 Time: {ts}"
+            f"🕒 Time: {ts}{host_info}"
         )
 
     return (
         f"ℹ️ *Notification*\n"
         f"🐳 Container: `{container_name}`\n"
-        f"🕒 Time: {ts}"
+        f"🕒 Time: {ts}{host_info}"
     )
 def notify(container_name=None, event_type="info", image=None, extra=None):
     msg = format_telegram_message(event_type, container_name, image, extra)
