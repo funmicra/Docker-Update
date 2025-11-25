@@ -14,7 +14,7 @@ import socket
 
 load_dotenv()
 
-HOSTNAME = socket.gethostname()
+HOSTNAME = os.getenv("HOST_MACHINE", "unknown-host")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true", help="Run in simulation mode (no updates applied)")
