@@ -2,7 +2,7 @@ name: Build & Push to Docker Hub
 
 on:
   push:
-    branches: ["Master"]
+    branches: ["master"]
     tags: ["v*"]
 
 jobs:
