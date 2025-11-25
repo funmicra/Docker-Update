@@ -9,8 +9,9 @@
  ## Features
 
  - Monitors running Docker containers and checks for newer image versions.
- - Automatically pulls updates and restarts containers safely.
+ - Automatically pulls updates, restarts containers safely and prunes unused images.
  - Sends real-time Telegram notifications (start, update, error).
+ - Anounce hostname which is very usefull if it runs in many servers.
  - Log rotation included for long-running environments.
  - Configurable check interval via environment variables (if not, default is 3600 seconds).
  - Deployable as a Docker container or standalone Python script.
@@ -31,13 +32,14 @@
  ```bash
 | Variable             | Description                              | Required | Default                     |
 | -------------------- | ---------------------------------------- | -------- | --------------------------- |
+| `HOST_MACHINE`       | Anounce the hostname                     | No       | —                           |
 | `TELEGRAM`           | Choose true or false                     | No       | false                       |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token                       | Yes      | —                           |
 | `TELEGRAM_CHAT_ID`   | Telegram chat ID                         | Yes      | —                           |
 | `CHECK_INTERVAL`     | Interval in seconds between image checks | No       | `3600`                      |
 | `SKIP_CONTAINERS`    | Choose containers not to updated         | No       | —                           |
 | `TZ`                 | Timezone for correct timing on logs      | No       | UTC                         |
-| `LOG_PATH`           | Path to rotating log file                | No       | `/app/logs`                 |
+| `LOG_PATH`           | Path to rotating log file                | No       | `/var/log/Docker-Update.log`|
 ```
 ---
 ## Running the App via Docker
@@ -48,16 +50,22 @@ docker pull funmicra/docker-update
 2. Run the container
 ```bash
 docker run -d \
+  -e HOST_MACHINE="$(hostname)" \
   -e TELEGRAM=true \
   -e TELEGRAM_BOT_TOKEN=your_bot_token \
   -e TELEGRAM_CHAT_ID=your_chat_id \
   -e CHECK_INTERVAL=86400 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   --name Docker-Update \
-  funmicra/docker-update
+  funmicra/docker-update:latest
 ```
 ---
 ## Running Without Docker
+Create a virtual environent:
+```bash
+python3 -m venv venv
+```
+
 Install dependencies:
 ```bash
 pip install -r requirements.txt

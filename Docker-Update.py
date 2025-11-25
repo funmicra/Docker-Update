@@ -323,7 +323,7 @@ def update_container(container):
 def cleanup_unused_images():
     try:
         logger.info("🧹 Pruning unused images…")
-        unused = client.images.prune(filters={"dangling": False})
+        unused = client.images.prune(filters={"dangling": True})
         reclaimed = unused.get("SpaceReclaimed", 0)
         if reclaimed > 0:
             size_mb = reclaimed / (1024 * 1024)
