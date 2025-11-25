@@ -106,45 +106,51 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
 
     if event_type == "dry_run":
         return (
+            f"{host_info}\n"
             f"🧪 *DRY RUN MODE*\n"
             f"🔍 No changes will be applied.\n"
-            f"🕒 Time: {ts}{host_info}"       
+            f"🕒 Time: {ts}"
         )
 
     if event_type == "update":
         return (
+            f"{host_info}\n"
             f"🟢 *Update*\n"
             f"🐳 Container: `{container_name}`\n"
             f"New Image: `{image}`\n"
-            f"🕒 Time: {ts}{host_info}"
+            f"🕒 Time: {ts}"
         )
 
     if event_type == "up_to_date":
         return (
+            f"{host_info}\n"
             f"✅ *No Update Needed*\n"
             f"🐳 Container: `{container_name}`\n"
-            f"🕒 Time: {ts}{host_info}"
+            f"🕒 Time: {ts}"
         )
 
     if event_type == "error":
         return (
+            f"{host_info}\n"
             f"⚠️ *Error*\n"
             f"🐳 Container: `{container_name}`\n"
             f"Details: `{extra}`\n"
-            f"🕒 Time: {ts}{host_info}"
+            f"🕒 Time: {ts}"
         )
 
     if event_type == "cleanup":
         return (
+            f"{host_info}\n"
             f"🧹 *Cleanup*\n"
             f"Reclaimed space: `{extra:.2f} MB`\n"
-            f"🕒 Time: {ts}{host_info}"
+            f"🕒 Time: {ts}"
         )
 
     return (
+        f"{host_info}\n"
         f"ℹ️ *Notification*\n"
         f"🐳 Container: `{container_name}`\n"
-        f"🕒 Time: {ts}{host_info}"
+        f"🕒 Time: {ts}"
     )
 def notify(container_name=None, event_type="info", image=None, extra=None):
     msg = format_telegram_message(event_type, container_name, image, extra)
