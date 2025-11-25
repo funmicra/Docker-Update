@@ -7,7 +7,7 @@ __pycache__/
 .venv/
 env/
 venv/
-
+actions-runner/
 # Environment files (secrets stay off-repo)
 .env
 *.env

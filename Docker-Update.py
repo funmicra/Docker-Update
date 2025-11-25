@@ -10,8 +10,11 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
 import argparse
+import socket
 
 load_dotenv()
+
+HOSTNAME = os.getenv("HOST_MACHINE", "unknown-host")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true", help="Run in simulation mode (no updates applied)")
@@ -64,6 +67,12 @@ LOG_PATH = os.path.join(LOG_DIR, "Docker-Update.log")
 
 logger = logging.getLogger("AutoUpdate")
 logger.setLevel(logging.INFO)
+class HostnameFilter(logging.Filter):
+    def filter(self, record):
+        record.hostname = HOSTNAME
+        return True
+
+logger.addFilter(HostnameFilter())
 
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
@@ -75,7 +84,7 @@ file_handler = RotatingFileHandler(
 )
 file_handler.setLevel(logging.INFO)
 
-fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+fmt = logging.Formatter('%(asctime)s - %(levelname)s - [%(hostname)s] - %(message)s')
 console.setFormatter(fmt)
 file_handler.setFormatter(fmt)
 
@@ -93,16 +102,19 @@ client = docker.from_env()
 # =========================
 def format_telegram_message(event_type, container_name=None, image=None, extra=None):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    host_info = f"\n🏠 Host: `{HOSTNAME}`"
 
     if event_type == "dry_run":
         return (
+            f"{host_info}\n"
             f"🧪 *DRY RUN MODE*\n"
             f"🔍 No changes will be applied.\n"
-            f"🕒 Time: {ts}"          
+            f"🕒 Time: {ts}"
         )
 
     if event_type == "update":
         return (
+            f"{host_info}\n"
             f"🟢 *Update*\n"
             f"🐳 Container: `{container_name}`\n"
             f"New Image: `{image}`\n"
@@ -111,6 +123,7 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
 
     if event_type == "up_to_date":
         return (
+            f"{host_info}\n"
             f"✅ *No Update Needed*\n"
             f"🐳 Container: `{container_name}`\n"
             f"🕒 Time: {ts}"
@@ -118,6 +131,7 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
 
     if event_type == "error":
         return (
+            f"{host_info}\n"
             f"⚠️ *Error*\n"
             f"🐳 Container: `{container_name}`\n"
             f"Details: `{extra}`\n"
@@ -126,12 +140,14 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
 
     if event_type == "cleanup":
         return (
+            f"{host_info}\n"
             f"🧹 *Cleanup*\n"
             f"Reclaimed space: `{extra:.2f} MB`\n"
             f"🕒 Time: {ts}"
         )
 
     return (
+        f"{host_info}\n"
         f"ℹ️ *Notification*\n"
         f"🐳 Container: `{container_name}`\n"
         f"🕒 Time: {ts}"
@@ -307,7 +323,7 @@ def update_container(container):
 def cleanup_unused_images():
     try:
         logger.info("🧹 Pruning unused images…")
-        unused = client.images.prune(filters={"dangling": False})
+        unused = client.images.prune(filters={"dangling": True})
         reclaimed = unused.get("SpaceReclaimed", 0)
         if reclaimed > 0:
             size_mb = reclaimed / (1024 * 1024)

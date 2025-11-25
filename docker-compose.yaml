@@ -4,7 +4,8 @@ services:
     container_name: Docker-Update
     restart: unless-stopped
     environment:
-      - TZ=${TZ}
+      - HOST_MACHINE=${HOST_MACHINE}
+      - TZ=Europe/Athens
       - TELEGRAM=yes
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
