@@ -1,13 +1,17 @@
 pipeline {
     agent any
+    triggers {
+        githubPush()
+    }
 
 
     environment {
         REPO_URL = 'https://github.com/funmicra/Docker-Update.git'
         BRANCH = 'master'
         COMPOSE_PROJECT_NAME = 'Docker-Update'
-        DOCKERHUB_CREDENTIALS = 'DOCKER_HUB'
-        DOCKERHUB_REPO = 'funmicra/docker-update'
+        REGISTRY_URL = "docker.io/funmicra"
+        IMAGE_NAME   = "docker-update"
+        FULL_IMAGE   = "${env.REGISTRY_URL}/${env.IMAGE_NAME}:latest"
     }
 
     stages {
@@ -18,39 +22,41 @@ pipeline {
             }
         }
 
-        stage('Build Docker Images') {
+        stage('Build Docker Image') {
             steps {
-                echo "Building Docker images..."
-                sh 'docker-compose -p ${COMPOSE_PROJECT_NAME} build'
-            }
-        }
-
-
-        stage('Tag and Push to Docker Hub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDENTIALS}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                script {
                     sh """
-                    # Login to Docker Hub
-                    echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-
-                    # Tag all images defined in docker-compose
-                    for service in \$(docker-compose -p ${COMPOSE_PROJECT_NAME} config --services); do
-                        image=\$(docker-compose -p ${COMPOSE_PROJECT_NAME} config | grep "image:.*\$service" | awk '{print \$2}')
-                        if [ -n "\$image" ]; then
-                            docker tag "\$image" ${DOCKERHUB_REPO}:\$service
-                            docker push ${DOCKERHUB_REPO}:\$service
-                        fi
-                    done
-
-                    docker logout
+                    docker build -t ${FULL_IMAGE} .
                     """
                 }
             }
         }
 
+        stage('Authenticate to Registry') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'DOCKER_HUB',
+                    usernameVariable: 'REG_USER',
+                    passwordVariable: 'REG_PASS'
+                )]) {
+                    sh '''
+                    echo "$REG_PASS" | docker login ${REGISTRY_URL} -u "$REG_USER" --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Push to DockerHub') {
+            steps {
+                sh """
+                docker push ${FULL_IMAGE}
+                """
+            }
+        }
+
         stage('Deploy to Remote Host') {
             steps {
-                sshagent(['${SSH_KEY_ID}']) { 
+                sshagent(['DEBIANSERVER']) {
                     sh """
                     ssh -o StrictHostKeyChecking=no funmicra@192.168.88.22 '
                     if docker-compose -p ${COMPOSE_PROJECT_NAME} ps -q | grep -q .; then
@@ -62,11 +68,11 @@ pipeline {
                         docker-compose -p ${COMPOSE_PROJECT_NAME} pull &&
                         docker-compose -p ${COMPOSE_PROJECT_NAME} up -d
                     '
+
                     """
                 }
             }
         }
-    
     }
 
     post {
