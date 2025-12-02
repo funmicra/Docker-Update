@@ -205,21 +205,26 @@ def update_container(container):
 
     try:
         logger.info(f"Checking {name} ({image_name})...")
+
         if DRY_RUN:
             logger.info(f"[DRY-RUN] Would pull latest image for {name}")
-            # simulate "update available"
             new_image_id = "SIMULATED-ID"
         else:
+            # Force pull the image by first removing local copy (if exists)
+            try:
+                client.images.remove(image=image_name, force=True)
+            except docker.errors.ImageNotFound:
+                pass
+
             new_image = client.images.pull(image_name)
             new_image_id = new_image.id
-            
+
         # Up-to-date check
         if not DRY_RUN and new_image_id == container.image.id:
             logger.info(f"{name} is up to date.")
             notify(name, "up_to_date")
             return
 
-        # If DRY RUN, pretend everything is always update-available
         logger.info(f"🆕 Update available for {name}")
         notify(name, "update", image_name)
 
@@ -248,13 +253,12 @@ def update_container(container):
             logger.info(f"{name} is part of docker-compose project '{compose_project}'.")
 
             if DRY_RUN:
-                logger.info(f"[DRY-RUN] Would run: docker-compose -p {compose_project} pull {compose_service}")
-                logger.info(f"[DRY-RUN] Would run: docker-compose -p {compose_project} up -d --no-deps {compose_service}")
+                logger.info(f"[DRY-RUN] Would pull and update {compose_service} in project {compose_project}")
                 return
 
+            # Force pull latest image
             cmd_pull = ["docker-compose", "-p", compose_project, "pull", compose_service]
             result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
-
             if result_pull.returncode != 0:
                 logger.error(f"docker-compose pull failed: {result_pull.stderr}")
                 notify(name, "error", extra=result_pull.stderr)
@@ -262,7 +266,6 @@ def update_container(container):
 
             cmd_up = ["docker-compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
             result_up = subprocess.run(cmd_up, capture_output=True, text=True)
-
             if result_up.returncode == 0:
                 logger.info(f"docker-compose service '{compose_service}' updated successfully.")
                 notify(name, "update", image_name)
@@ -285,19 +288,12 @@ def update_container(container):
         network = container.attrs['HostConfig']['NetworkMode']
 
         if DRY_RUN:
-            logger.info(f"[DRY-RUN] Would stop/remove container {name}")
-            logger.info(f"[DRY-RUN] Would recreate {name} with:")
-            logger.info(f"          Image: {image_name}")
-            logger.info(f"          Ports: {ports}")
-            logger.info(f"          Env: {env}")
-            logger.info(f"          Volumes: {volumes}")
-            logger.info(f"          Network: {network}")
+            logger.info(f"[DRY-RUN] Would stop/remove container {name} and recreate with {image_name}")
             return
 
-        # Actual update
+        # Actual update: stop, remove, recreate with latest image
         container.stop()
         container.remove()
-
         client.containers.run(
             image_name,
             name=name,
@@ -308,13 +304,13 @@ def update_container(container):
             restart_policy=restart_policy,
             network=network
         )
-
         logger.info(f"{name} updated successfully!")
         notify(name, "update", image_name)
 
     except Exception as e:
         logger.error(f"Error updating {name}: {e}")
         notify(name, "error", extra=str(e))
+
  
 
 # =========================
@@ -366,3 +362,4 @@ if __name__ == "__main__":
     if DRY_RUN:
         notify(event_type="dry_run")  # global dry-run banner
     main()
+
