@@ -1,6 +1,6 @@
 services:
   Docker-Update:
-    image: funmicra/docker-update:latest
+    image: registry.black-crab.cc/docker-update:latest
     container_name: Docker-Update
     restart: unless-stopped
     environment:
