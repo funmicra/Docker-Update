@@ -15,6 +15,7 @@ pipeline {
     }
 
     stages {
+        // Stage to checkout code from GitHub repository
         stage('Checkout') {
             steps {
                 echo "Checking out GitHub repository..."
@@ -22,6 +23,7 @@ pipeline {
             }
         }
 
+        // Stage to build Docker image
         stage('Build Docker Image') {
             steps {
                 script {
@@ -56,6 +58,7 @@ pipeline {
             }
         }
 
+        // Stage to deploy the updated Docker image to the remote host
         stage('Deploy to Remote Host') {
             steps {
                 sshagent(['DEBIANSERVER']) {
