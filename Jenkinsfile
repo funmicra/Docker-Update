@@ -59,14 +59,14 @@ pipeline {
                 sshagent(['DEBIANSERVER']) {
                     sh """
                     ssh -o StrictHostKeyChecking=no funmicra@192.168.88.22 '
-                    if docker-compose -p ${COMPOSE_PROJECT_NAME} ps -q | grep -q .; then
-                        docker-compose -p ${COMPOSE_PROJECT_NAME} down
+                    if docker compose -p ${COMPOSE_PROJECT_NAME} ps -q | grep -q .; then
+                        docker compose -p ${COMPOSE_PROJECT_NAME} down
                     else
                         echo "No running containers to stop."
                     fi
                         cd /home/funmicra/stacks/docker-update &&
-                        docker-compose -p ${COMPOSE_PROJECT_NAME} pull &&
-                        docker-compose -p ${COMPOSE_PROJECT_NAME} up -d
+                        docker compose -p ${COMPOSE_PROJECT_NAME} pull &&
+                        docker compose -p ${COMPOSE_PROJECT_NAME} up -d
                     '
 
                     """
