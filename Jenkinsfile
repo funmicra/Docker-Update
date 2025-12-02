@@ -8,7 +8,7 @@ pipeline {
     environment {
         REPO_URL = 'https://github.com/funmicra/Docker-Update.git'
         BRANCH = 'master'
-        COMPOSE_PROJECT_NAME = 'Docker-Update'
+        COMPOSE_PROJECT_NAME = 'docker-update'
         REGISTRY_URL = "docker.io/funmicra"
         IMAGE_NAME   = "docker-update"
         FULL_IMAGE   = "${env.REGISTRY_URL}/${env.IMAGE_NAME}:latest"
