@@ -1,4 +1,6 @@
-docker
-PyYAML
-requests
-python-dotenv
+certifi==2025.11.12
+charset-normalizer==3.4.4
+docker==7.1.0
+idna==3.11
+requests==2.32.5
+urllib3==2.5.0

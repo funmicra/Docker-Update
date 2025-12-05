@@ -11,7 +11,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 import argparse
 import socket
-from docker.errors import NotFound, APIError
 
 load_dotenv()
 
@@ -181,82 +180,208 @@ last_check_time = {}
 
 def update_container(container):
     global last_check_time
-
     name = container.name
-    image_name = container.image.tags[0] if container.image.tags else None
-    old_image_id = container.image.id
-    new_image_id = None   # <-- critical: guarantee variable exists
+    
+    new_image_id = None 
+    # Rate limiting per container
+    now = time.time()
+    if name in last_check_time and now - last_check_time[name] < CFG["check_interval"]:
+        return
+    last_check_time[name] = now
 
-    logger.info(f"🔍 Evaluating update window for {name} ({image_name})")
+    # Skip-list logic
+    if name in CFG["skip_containers"]:
+        logger.info(f"Skipping container {name} (in skip list)")
+        return
+
+    labels = container.attrs['Config'].get('Labels', {})
+    stack_name = labels.get('com.docker.stack.namespace')
+    compose_project = labels.get('com.docker.compose.project')
+    compose_service = labels.get('com.docker.compose.service')
+    image_name = container.image.tags[0] if container.image.tags else None
+
+    if not image_name:
+        logger.warning(f"Container {name} has no tagged image. Skipping.")
+        return
 
     try:
-        if not image_name:
-            raise RuntimeError("Container has no tagged image reference.")
-
-        repo, tag = image_name.split(":")
-
-        # --- Pull fresh image -------------------------------------------------
-        logger.info(f"📦 Pulling new image for {name}: {image_name}")
+        logger.info(f"Checking {name} ({image_name})...")
 
         if DRY_RUN:
+            logger.info(f"[DRY-RUN] Would pull latest image for {name}")
             new_image_id = "SIMULATED-ID"
-            logger.info(f"(DRY_RUN) Simulated new image ID: {new_image_id}")
         else:
+            # Force pull the image by first removing local copy (if exists)
             try:
-                # preemptive hygiene: remove old tag if orphaned
-                try:
-                    client.images.remove(image=image_name, force=True)
-                except docker.errors.ImageNotFound:
-                    pass
+                client.images.remove(image=image_name, force=True)
+            except docker.errors.ImageNotFound:
+                pass
 
-                new_image = client.images.pull(image_name)
-                new_image_id = new_image.id
+            new_image = client.images.pull(image_name)
+            repo, tag = image_name.split(":")
+            new_image.tag(repo, tag)
+            # new_image_id = new_image.id
 
-                # re-tag to avoid `<none>` images
-                new_image.tag(repo, tag)
-
-            except Exception as pull_error:
-                raise RuntimeError(
-                    f"Image pull failed for {image_name}: {pull_error}"
-                )
-
-        # --- Determine if update is even necessary -----------------------------
-        if not DRY_RUN and new_image_id == old_image_id:
-            logger.info(f"⏩ {name} is already current. No update required.")
-            notify(name, "skipped")
+        # Up-to-date check
+        if not DRY_RUN and new_image_id == container.image.id:
+            logger.info(f"{name} is up to date.")
+            notify(name, "up_to_date")
             return
 
-        # --- Stop, replace, restart container ---------------------------------
-        logger.info(f"🔄 Rolling update for {name}")
+        logger.info(f"🆕 Update available for {name}")
+        notify(name, "update", image_name)
 
-        if not DRY_RUN:
-            container.stop()
-            client.containers.remove(container.id)
+        # ==================== SWARM ====================
+        if stack_name:
+            service_name = f"{stack_name}_{name}"
+            logger.info(f"{name} is part of Swarm stack '{stack_name}'.")
 
-            # ensure clean slate for old leftovers
-            client.images.prune(filters={"dangling": True})
+            if DRY_RUN:
+                logger.info(f"[DRY-RUN] Would run: docker service update --image {image_name} {service_name}")
+                return
 
-            # deploy updated container
-            client.containers.run(
-                image_name,
-                name=name,
-                detach=True,
-                ports=container.attrs["NetworkSettings"]["Ports"],
-                environment=container.attrs["Config"]["Env"],
-                volumes=container.attrs["Mounts"],
-                restart_policy=container.attrs["HostConfig"]["RestartPolicy"],
-            )
+            cmd = ["docker", "service", "update", "--image", image_name, service_name]
+            result = subprocess.run(cmd, capture_output=True, text=True)
 
-        logger.info(f"✅ Update complete for {name}")
-        notify(name, "updated", extra=f"new image ID: {new_image_id}")
+            if result.returncode == 0:
+                logger.info(f"Stack service {service_name} updated successfully.")
+                notify(service_name, "update", image_name)
+            else:
+                logger.error(f"Service update failed: {result.stderr}")
+                notify(service_name, "error", extra=result.stderr)
+            return
+
+        # ==================== COMPOSE ====================
+        if compose_project and compose_service:
+            logger.info(f"{name} is part of docker-compose project '{compose_project}'.")
+
+            if DRY_RUN:
+                logger.info(f"[DRY-RUN] Would pull and update {compose_service} in project {compose_project}")
+                return
+
+            # Force pull latest image
+            cmd_pull = ["docker-compose", "-p", compose_project, "pull", compose_service]
+            result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
+            if result_pull.returncode != 0:
+                logger.error(f"docker-compose pull failed: {result_pull.stderr}")
+                notify(name, "error", extra=result_pull.stderr)
+                return
+
+            cmd_up = ["docker-compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
+            result_up = subprocess.run(cmd_up, capture_output=True, text=True)
+            if result_up.returncode == 0:
+                logger.info(f"docker-compose service '{compose_service}' updated successfully.")
+                notify(name, "update", image_name)
+            else:
+                logger.error(f"docker-compose up failed: {result_up.stderr}")
+                notify(name, "error", extra=result_up.stderr)
+            return
+
+        # ==================== STANDALONE ====================
+        ports = container.attrs['HostConfig']['PortBindings']
+        env = container.attrs['Config']['Env']
+        mounts = container.attrs.get('Mounts', [])
+        volumes = {
+            m['Destination']: {
+                'bind': m['Destination'],
+                'mode': m.get('Mode', 'rw')
+            } for m in mounts if "Destination" in m
+        }
+        restart_policy = container.attrs['HostConfig']['RestartPolicy']
+        network = container.attrs['HostConfig']['NetworkMode']
+
+        if DRY_RUN:
+            logger.info(f"[DRY-RUN] Would stop/remove container {name} and recreate with {image_name}")
+            return
+
+        # Actual update: stop, remove, recreate with latest image
+        container.stop()
+        container.remove()
+        client.containers.run(
+            image_name,
+            name=name,
+            detach=True,
+            ports={k: int(v[0]['HostPort']) for k, v in ports.items()} if ports else None,
+            environment=env,
+            volumes=volumes,
+            restart_policy=restart_policy,
+            network=network
+        )
+        logger.info(f"{name} updated successfully!")
+        notify(name, "update", image_name)
 
     except Exception as e:
-        # consistent error flow: no assumptions about variable existence
-        logger.error(f"❌ Update failed for {name}: {e}")
+        logger.error(f"Error updating {name}: {e}")
         notify(name, "error", extra=str(e))
 
-    last_check_time = datetime.now()
+def update_container(container):
+    global last_check_time
+    name = container.name
 
+    # Always predefine the variable to eliminate unbound errors
+    new_image_id = None
+
+    # Rate limiting per container
+    now = time.time()
+    if name in last_check_time and now - last_check_time[name] < CFG["check_interval"]:
+        return
+    last_check_time[name] = now
+
+    # Skip-list logic
+    if name in CFG["skip_containers"]:
+        logger.info(f"Skipping container {name} (in skip list)")
+        return
+
+    try:
+        current_image = container.image.id
+    except Exception as e:
+        notify(name, "error", extra=f"Unable to retrieve image ID: {e}")
+        return
+
+    # Pull latest image
+    try:
+        pulled = client.images.pull(container.image.tags[0].split(":")[0], tag="latest")
+        new_image_id = pulled.id
+    except Exception as e:
+        notify(name, "error", extra=f"Image pull failed: {e}")
+        return
+
+    # No change detected — early exit
+    if new_image_id == current_image:
+        notify(name, "up_to_date")
+        return
+
+    # Dry run mode
+    if DRY_RUN:
+        notify(name, "dry_run", image=new_image_id)
+        return
+
+    # Stop + remove legacy container
+    try:
+        container.stop()
+        container.remove()
+    except Exception as e:
+        notify(name, "error", extra=f"Container removal failure: {e}")
+        return
+
+    # Deploy updated image
+    try:
+        client.containers.run(
+            container.image.tags[0].split(":")[0] + ":latest",
+            name=name,
+            detach=True,
+            restart_policy={"Name": "always"},
+            ports=container.attrs.get("HostConfig", {}).get("PortBindings", {}),
+            volumes=container.attrs.get("Mounts", {}),
+            environment=container.attrs.get("Config", {}).get("Env", [])
+        )
+    except Exception as e:
+        notify(name, "error", extra=f"Container deployment failure: {e}")
+        return
+
+    # Success path
+    notify(name, "update", image=new_image_id)
+    logger.info(f"Container {name} updated successfully → {new_image_id}")
 
  
 
