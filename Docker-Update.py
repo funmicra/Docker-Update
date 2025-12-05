@@ -191,7 +191,6 @@ def update_container(container):
     global last_check_time
     name = container.name
     
-    new_image_id = None 
     # Rate limiting per container
     now = time.time()
     if name in last_check_time and now - last_check_time[name] < CFG["check_interval"]:
@@ -203,41 +202,45 @@ def update_container(container):
         logger.info(f"Skipping container {name} (in skip list)")
         return
 
+    # Labels for Swarm/Compose detection
     labels = container.attrs['Config'].get('Labels', {})
     stack_name = labels.get('com.docker.stack.namespace')
     compose_project = labels.get('com.docker.compose.project')
     compose_service = labels.get('com.docker.compose.service')
-    image_name = container.image.tags[0] if container.image.tags else None
 
+    # Determine image
+    image_name = container.image.tags[0] if container.image.tags else None
     if not image_name:
         logger.warning(f"Container {name} has no tagged image. Skipping.")
         return
+
+    # Determine repo and tag
+    repo, tag = (image_name.split(":") + ["latest"])[:2]
+    auto_update = (tag.lower() == "latest")  # Only auto-update if :latest
 
     try:
         logger.info(f"Checking {name} ({image_name})...")
 
         if DRY_RUN:
             logger.info(f"[DRY-RUN] Would pull latest image for {name}")
-            new_image_id = "SIMULATED-ID"
+            new_image = container.image
         else:
-            # Force pull the image by first removing local copy (if exists)
-            try:
-                client.images.remove(image=image_name, force=True)
-            except docker.errors.ImageNotFound:
-                pass
-
-            new_image = client.images.pull(image_name)
-            repo, tag = image_name.split(":")
-            new_image.tag(repo, tag)
-            # new_image_id = new_image.id
+            # Pull latest if applicable
+            if auto_update:
+                logger.info(f"Pulling latest image for {name}...")
+                new_image = client.images.pull(repo, tag=tag)
+                new_image.tag(repo, tag)  # Ensure correct tagging
+            else:
+                logger.info(f"Skipping pull for {name} (custom tag: {tag})")
+                new_image = container.image
 
         # Up-to-date check
-        if not DRY_RUN and new_image_id == container.image.id:
-            logger.info(f"{name} is up to date.")
+        if not DRY_RUN and new_image.id == container.image.id:
+            logger.info(f"{name} is already up to date.")
             notify(name, "up_to_date")
             return
 
-        logger.info(f"🆕 Update available for {name}")
+        logger.info(f"🆕 Update needed for {name}")
         notify(name, "update", image_name)
 
         # ==================== SWARM ====================
@@ -268,7 +271,6 @@ def update_container(container):
                 logger.info(f"[DRY-RUN] Would pull and update {compose_service} in project {compose_project}")
                 return
 
-            # Force pull latest image
             cmd_pull = ["docker-compose", "-p", compose_project, "pull", compose_service]
             result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
             if result_pull.returncode != 0:
@@ -303,7 +305,7 @@ def update_container(container):
             logger.info(f"[DRY-RUN] Would stop/remove container {name} and recreate with {image_name}")
             return
 
-        # Actual update: stop, remove, recreate with latest image
+        # Stop, remove, recreate container
         container.stop()
         container.remove()
         client.containers.run(
@@ -322,77 +324,6 @@ def update_container(container):
     except Exception as e:
         logger.error(f"Error updating {name}: {e}")
         notify(name, "error", extra=str(e))
-
-def update_container(container):
-    global last_check_time
-    name = container.name
-
-    # Always predefine the variable to eliminate unbound errors
-    new_image_id = None
-
-    # Rate limiting per container
-    now = time.time()
-    if name in last_check_time and now - last_check_time[name] < CFG["check_interval"]:
-        return
-    last_check_time[name] = now
-
-    # Skip-list logic
-    if name in CFG["skip_containers"]:
-        logger.info(f"Skipping container {name} (in skip list)")
-        return
-
-    try:
-        current_image = container.image.id
-    except Exception as e:
-        notify(name, "error", extra=f"Unable to retrieve image ID: {e}")
-        return
-
-    # Pull latest image
-    try:
-        pulled = client.images.pull(container.image.tags[0].split(":")[0], tag="latest")
-        new_image_id = pulled.id
-    except Exception as e:
-        notify(name, "error", extra=f"Image pull failed: {e}")
-        return
-
-    # No change detected — early exit
-    if new_image_id == current_image:
-        notify(name, "up_to_date")
-        return
-
-    # Dry run mode
-    if DRY_RUN:
-        notify(name, "dry_run", image=new_image_id)
-        return
-
-    # Stop + remove legacy container
-    try:
-        container.stop()
-        container.remove()
-    except Exception as e:
-        notify(name, "error", extra=f"Container removal failure: {e}")
-        return
-
-    # Deploy updated image
-    try:
-        client.containers.run(
-            container.image.tags[0].split(":")[0] + ":latest",
-            name=name,
-            detach=True,
-            restart_policy={"Name": "always"},
-            ports=container.attrs.get("HostConfig", {}).get("PortBindings", {}),
-            volumes=container.attrs.get("Mounts", {}),
-            environment=container.attrs.get("Config", {}).get("Env", [])
-        )
-    except Exception as e:
-        notify(name, "error", extra=f"Container deployment failure: {e}")
-        return
-
-    # Success path
-    notify(name, "update", image=new_image_id)
-    logger.info(f"Container {name} updated successfully → {new_image_id}")
-
- 
 
 # =========================
 # Cleanup unused images
@@ -443,4 +374,3 @@ if __name__ == "__main__":
     if DRY_RUN:
         notify(event_type="dry_run")  # global dry-run banner
     main()
-
