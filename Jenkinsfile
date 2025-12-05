@@ -9,13 +9,12 @@ pipeline {
         REPO_URL = 'https://github.com/funmicra/Docker-Update.git'
         BRANCH = 'master'
         COMPOSE_PROJECT_NAME = 'docker-update'
-        REGISTRY_URL = "registry.black-crab.cc"
+        REGISTRY_URL = "docker.io/funmicra"
         IMAGE_NAME   = "docker-update"
         FULL_IMAGE   = "${env.REGISTRY_URL}/${env.IMAGE_NAME}:latest"
     }
 
     stages {
-        // Stage to checkout code from GitHub repository
         stage('Checkout') {
             steps {
                 echo "Checking out GitHub repository..."
@@ -23,7 +22,6 @@ pipeline {
             }
         }
 
-        // Stage to build Docker image
         stage('Build Docker Image') {
             steps {
                 script {
@@ -34,11 +32,10 @@ pipeline {
             }
         }
 
-        // Stage to authenticate to Nexus registry
         stage('Authenticate to Registry') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'nexus_registry_login',
+                    credentialsId: 'DOCKER_HUB',
                     usernameVariable: 'REG_USER',
                     passwordVariable: 'REG_PASS'
                 )]) {
@@ -49,8 +46,7 @@ pipeline {
             }
         }
 
-        // Stage to push Docker image to Nexus registry
-        stage('Push to Nexus Registry') {
+        stage('Push to DockerHub') {
             steps {
                 sh """
                 docker push ${FULL_IMAGE}
@@ -58,7 +54,6 @@ pipeline {
             }
         }
 
-        // Stage to deploy the updated Docker image to the remote host
         stage('Deploy to Remote Host') {
             steps {
                 sshagent(['DEBIANSERVER']) {
