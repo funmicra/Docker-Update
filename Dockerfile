@@ -21,7 +21,7 @@ RUN apt-get update && \
 
 # Copy application files
 COPY Docker-Update.py .
-COPY requirements.txt .
+COPY requirements.txt ./
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
