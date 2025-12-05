@@ -216,8 +216,10 @@ def update_container(container):
             except docker.errors.ImageNotFound:
                 pass
 
-            new_image = client.images.pull(image_name:latest)
-            new_image_id = new_image.id
+            new_image = client.images.pull(image_name)
+            repo, tag = image_name.split(":")
+            new_image.tag(repo, tag)
+            # new_image_id = new_image.id
 
         # Up-to-date check
         if not DRY_RUN and new_image_id == container.image.id:
