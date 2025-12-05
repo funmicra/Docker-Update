@@ -8,7 +8,7 @@ pipeline {
     environment {
         REPO_URL = 'https://github.com/funmicra/Docker-Update.git'
         BRANCH = 'master'
-        COMPOSE_PROJECT_NAME = 'Docker-Update'
+        COMPOSE_PROJECT_NAME = 'docker-update'
         REGISTRY_URL = "docker.io/funmicra"
         IMAGE_NAME   = "docker-update"
         FULL_IMAGE   = "${env.REGISTRY_URL}/${env.IMAGE_NAME}:latest"
@@ -64,7 +64,7 @@ pipeline {
                     else
                         echo "No running containers to stop."
                     fi
-                        cd /home/funmicra/stacks/Docker-Update &&
+                        cd /home/funmicra/stacks/docker-update &&
                         docker compose -p ${COMPOSE_PROJECT_NAME} pull &&
                         docker compose -p ${COMPOSE_PROJECT_NAME} up -d
                     '
