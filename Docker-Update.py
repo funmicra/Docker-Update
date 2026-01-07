@@ -271,14 +271,14 @@ def update_container(container):
                 logger.info(f"[DRY-RUN] Would pull and update {compose_service} in project {compose_project}")
                 return
 
-            cmd_pull = ["docker-compose", "-p", compose_project, "pull", compose_service]
+            cmd_pull = ["docker", "compose", "-p", compose_project, "pull", compose_service]
             result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
             if result_pull.returncode != 0:
                 logger.error(f"docker-compose pull failed: {result_pull.stderr}")
                 notify(name, "error", extra=result_pull.stderr)
                 return
 
-            cmd_up = ["docker-compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
+            cmd_up = ["docker", "compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
             result_up = subprocess.run(cmd_up, capture_output=True, text=True)
             if result_up.returncode == 0:
                 logger.info(f"docker-compose service '{compose_service}' updated successfully.")

@@ -1,19 +1,10 @@
 services:
   Docker-Update:
     image: funmicra/docker-update:latest
-    container_name: Docker-Update
+    container_name: Updater
     restart: unless-stopped
-    environment:
-      - HOST_MACHINE=${HOST_MACHINE}
-      - TZ=Europe/Athens
-      - TELEGRAM=yes
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
-      - CHECK_INTERVAL=${CHECK_INTERVAL}
+    env_file:
+      - /opt/infra/env/docker-update.env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
-networks:
-  default:
-    external: true
-    name: Apps-Network
