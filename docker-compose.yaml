@@ -7,4 +7,3 @@ services:
       - /opt/infra/env/docker-update.env
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-

@@ -35,7 +35,7 @@ pipeline {
         stage('Authenticate to Registry') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'DOCKER_HUB',
+                    credentialsId: 'DOCKER_HUB_CREDENTIALS',
                     usernameVariable: 'REG_USER',
                     passwordVariable: 'REG_PASS'
                 )]) {
@@ -58,7 +58,7 @@ pipeline {
             steps {
                 sshagent(['DEBIANSERVER']) {
                     sh """
-                    ssh -o StrictHostKeyChecking=no funmicra@192.168.88.22 '
+                    ssh -o StrictHostKeyChecking=no ansible@192.168.88.22 '
                     if docker compose -p ${COMPOSE_PROJECT_NAME} ps -q | grep -q .; then
                         docker compose -p ${COMPOSE_PROJECT_NAME} down
                     else

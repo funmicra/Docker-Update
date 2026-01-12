@@ -16,6 +16,9 @@ load_dotenv()
 
 HOSTNAME = os.getenv("HOST_MACHINE", "unknown-host")
 
+# =========================
+# CLI arguments
+# =========================
 parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true", help="Run in simulation mode (no updates applied)")
 parser.add_argument("--run-once", action="store_true", help="Run a single update cycle and exit")
