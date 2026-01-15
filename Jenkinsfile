@@ -64,7 +64,7 @@ pipeline {
                     else
                         echo "No running containers to stop."
                     fi
-                        cd /home/funmicra/stacks/docker-update &&
+                        cd /opt/infra/stacks/docker-update &&
                         docker compose -p ${COMPOSE_PROJECT_NAME} pull &&
                         docker compose -p ${COMPOSE_PROJECT_NAME} up -d
                     '
