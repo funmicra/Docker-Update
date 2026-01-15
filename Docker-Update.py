@@ -242,7 +242,7 @@ def update_container(container):
     else:
         repo, tag = image_name, "latest"
 
-    auto_update = (tag.lower() == "latest")
+    auto_update = tag.lower() == "latest" or tag.isdigit()
 
     try:
         logger.info(f"Checking {name} ({image_name})...")
