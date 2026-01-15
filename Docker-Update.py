@@ -11,6 +11,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 import argparse
 import socket
+import shutil
+
 
 load_dotenv()
 
@@ -192,6 +194,16 @@ def resolve_image_id(repo, tag):
     image = client.images.get(f"{repo}:{tag}")
     return image.id
 
+def get_compose_cmd():
+    """
+    Detect whether docker-compose (v1) or docker compose (v2) is available.
+    Returns the command as a list.
+    """
+    if shutil.which("docker-compose"):
+        return ["docker-compose"]
+    return ["docker", "compose"]
+
+
 # =========================
 # Update container function
 # =========================
@@ -296,26 +308,46 @@ def update_container(container):
         if compose_project and compose_service:
             logger.info(f"{name} is part of docker-compose project '{compose_project}'.")
 
+            compose_cmd = get_compose_cmd()
+
             if DRY_RUN:
-                logger.info(f"[DRY-RUN] Would pull and update {compose_service} in project {compose_project}")
+                logger.info(
+                    f"[DRY-RUN] Would run: {' '.join(compose_cmd)} "
+                    f"-p {compose_project} pull {compose_service}"
+                )
+                logger.info(
+                    f"[DRY-RUN] Would run: {' '.join(compose_cmd)} "
+                    f"-p {compose_project} up -d --no-deps {compose_service}"
+                )
                 return
 
-            cmd_pull = ["docker", "compose", "-p", compose_project, "pull", compose_service]
+            # Pull
+            cmd_pull = compose_cmd + ["-p", compose_project, "pull", compose_service]
             result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
+
             if result_pull.returncode != 0:
-                logger.error(f"docker-compose pull failed: {result_pull.stderr}")
-                notify(name, "error", extra=result_pull.stderr)
+                logger.error(f"Compose pull failed: {result_pull.stderr.strip()}")
+                notify(name, "error", extra=result_pull.stderr.strip())
                 return
 
-            cmd_up = ["docker", "compose", "-p", compose_project, "up", "-d", "--no-deps", compose_service]
+            # Update
+            cmd_up = compose_cmd + [
+                "-p", compose_project,
+                "up", "-d", "--no-deps", compose_service
+            ]
             result_up = subprocess.run(cmd_up, capture_output=True, text=True)
+
             if result_up.returncode == 0:
-                logger.info(f"docker-compose service '{compose_service}' updated successfully.")
+                logger.info(
+                    f"Compose service '{compose_service}' updated successfully."
+                )
                 notify(name, "update", image_name)
             else:
-                logger.error(f"docker-compose up failed: {result_up.stderr}")
-                notify(name, "error", extra=result_up.stderr)
+                logger.error(f"Compose up failed: {result_up.stderr.strip()}")
+                notify(name, "error", extra=result_up.stderr.strip())
+
             return
+
 
         # ==================== STANDALONE ====================
         ports = container.attrs['HostConfig']['PortBindings']
