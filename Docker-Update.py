@@ -185,6 +185,13 @@ def get_image_basename(container):
         raise ValueError("Container image has no tags (dangling <none>:<none>)")
     return tags[0].split(":")[0]
 
+def resolve_image_id(repo, tag):
+    """
+    Resolve the image ID that repo:tag currently points to.
+    """
+    image = client.images.get(f"{repo}:{tag}")
+    return image.id
+
 # =========================
 # Update container function
 # =========================
@@ -218,8 +225,12 @@ def update_container(container):
         return
 
     # Determine repo and tag
-    repo, tag = (image_name.split(":") + ["latest"])[:2]
-    auto_update = (tag.lower() == "latest")  # Only auto-update if :latest
+    if ":" in image_name:
+        repo, tag = image_name.rsplit(":", 1)
+    else:
+        repo, tag = image_name, "latest"
+
+    auto_update = (tag.lower() == "latest")
 
     try:
         logger.info(f"Checking {name} ({image_name})...")
@@ -232,15 +243,30 @@ def update_container(container):
             if auto_update:
                 logger.info(f"Pulling latest image for {name}...")
                 new_image = client.images.pull(repo, tag=tag)
-                new_image.tag(repo, tag)  # Ensure correct tagging
             else:
                 logger.info(f"Skipping pull for {name} (custom tag: {tag})")
                 new_image = container.image
 
         # Up-to-date check
-        if not DRY_RUN and new_image.id == container.image.id:
-            logger.info(f"{name} is already up to date.")
-            notify(name, "up_to_date")
+        if auto_update:
+            try:
+                latest_id = resolve_image_id(repo, tag)
+            except docker.errors.ImageNotFound:
+                logger.error(f"Unable to resolve {repo}:{tag}")
+                notify(name, "error", extra=f"Cannot resolve {repo}:{tag}")
+                return
+
+            current_id = container.image.id
+
+            if current_id == latest_id:
+                logger.info(f"{name} is already running the latest image.")
+                notify(name, "up_to_date")
+                return
+
+            logger.info(f"🆕 Image drift detected for {name}")
+            logger.info(f"{name}: current={current_id[:12]} latest={latest_id[:12]}")
+        else:
+            logger.info(f"{name} uses pinned tag '{tag}', skipping update.")
             return
 
         logger.info(f"🆕 Update needed for {name}")
