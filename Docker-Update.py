@@ -9,7 +9,6 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
 import argparse
-import shutil
 from typing import cast
 from docker.types import RestartPolicy
 import json
@@ -37,17 +36,10 @@ def to_bool(value):
     return str(value).lower() in ("1", "true", "yes", "y", "on")
 
 CFG = {
-    "check_interval": (
-        int(os.getenv("CHECK_INTERVAL").strip())
-        if os.getenv("CHECK_INTERVAL") and os.getenv("CHECK_INTERVAL").strip().isdigit()
-        else 3600
-    ),
-    "skip_containers": [
-        c.strip() for c in os.getenv("SKIP_CONTAINERS", "").split(",") if c.strip()
-    ],
+    "check_interval": int(os.getenv("CHECK_INTERVAL") or 3600),
+    "skip_containers": [c.strip() for c in os.getenv("SKIP_CONTAINERS", "").split(",") if c.strip()],
     "notifications": {
         "enabled": to_bool(os.getenv("TELEGRAM", "false")),
-        "type": "telegram",
         "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID")
     },
@@ -72,6 +64,7 @@ class HostnameFilter(logging.Filter):
     def filter(self, record):
         record.hostname = HOSTNAME
         return True
+
 logger.addFilter(HostnameFilter())
 
 console = logging.StreamHandler()
@@ -98,53 +91,16 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
     host_info = f"\n🏠 Host: `{HOSTNAME}`"
 
     if event_type == "dry_run":
-        return (
-            f"{host_info}\n"
-            f"🧪 *DRY RUN MODE*\n"
-            f"🔍 No changes will be applied.\n"
-            f"🕒 Time: {ts}"
-        )
-
+        return f"{host_info}\n🧪 *DRY RUN MODE*\n🔍 No changes will be applied.\n🕒 Time: {ts}"
     if event_type == "update":
-        return (
-            f"{host_info}\n"
-            f"🟢 *Update*\n"
-            f"🐳 Container: `{container_name}`\n"
-            f"New Image: `{image}`\n"
-            f"🕒 Time: {ts}"
-        )
-
+        return f"{host_info}\n🟢 *Update*\n🐳 Container: `{container_name}`\nNew Image: `{image}`\n🕒 Time: {ts}"
     if event_type == "up_to_date":
-        return (
-            f"{host_info}\n"
-            f"✅ *No Update Needed*\n"
-            f"🐳 Container: `{container_name}`\n"
-            f"🕒 Time: {ts}"
-        )
-
+        return f"{host_info}\n✅ *No Update Needed*\n🐳 Container: `{container_name}`\n🕒 Time: {ts}"
     if event_type == "error":
-        return (
-            f"{host_info}\n"
-            f"⚠️ *Error*\n"
-            f"🐳 Container: `{container_name}`\n"
-            f"Details: `{extra}`\n"
-            f"🕒 Time: {ts}"
-        )
-
+        return f"{host_info}\n⚠️ *Error*\n🐳 Container: `{container_name}`\nDetails: `{extra}`\n🕒 Time: {ts}"
     if event_type == "cleanup":
-        return (
-            f"{host_info}\n"
-            f"🧹 *Cleanup*\n"
-            f"Reclaimed space: `{extra:.2f} MB`\n"
-            f"🕒 Time: {ts}"
-        )
-
-    return (
-        f"{host_info}\n"
-        f"ℹ️ *Notification*\n"
-        f"🐳 Container: `{container_name}`\n"
-        f"🕒 Time: {ts}"
-    )
+        return f"{host_info}\n🧹 *Cleanup*\nReclaimed space: `{extra:.2f} MB`\n🕒 Time: {ts}"
+    return f"{host_info}\nℹ️ *Notification*\n🐳 Container: `{container_name}`\n🕒 Time: {ts}"
 
 def notify(container_name=None, event_type="info", image=None, extra=None):
     msg = format_telegram_message(event_type, container_name, image, extra)
@@ -174,9 +130,6 @@ def get_local_digest(repo: str, repo_digests: list[str]) -> str | None:
             return rd.split("@", 1)[1]
     return None
 
-def resolve_image_id(repo, tag):
-    return client.images.get(f"{repo}:{tag}").id
-
 def get_remote_digest(image_ref):
     cmd = ["docker", "manifest", "inspect", image_ref]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -184,17 +137,10 @@ def get_remote_digest(image_ref):
         raise RuntimeError(result.stderr)
     data = json.loads(result.stdout)
     TARGET_ARCH = os.getenv("TARGET_ARCH", "amd64")
-
-    # multi-arch manifest
     if "manifests" in data:
         for m in data["manifests"]:
             if m["platform"]["architecture"] == TARGET_ARCH:
                 return m["digest"]
-
-    # single-arch fallback
-    if "Descriptor" in data:
-        return data["Descriptor"]["digest"]
-
     raise RuntimeError(f"No digest found for architecture '{TARGET_ARCH}'")
 
 # =========================
@@ -212,21 +158,16 @@ def update_container(container):
 
     container.reload()
     labels = container.attrs["Config"].get("Labels", {})
-    stack_name = labels.get("com.docker.stack.namespace")
-    compose_project = labels.get("com.docker.compose.project")
-    compose_service = labels.get("com.docker.compose.service")
+    compose_dir = labels.get("com.docker.compose.project.working_dir")
 
     if not container.image.tags:
         logger.warning(f"Container {name} has no tagged image. Skipping.")
         return
 
     image_name = container.image.tags[0]
-    if ":" in image_name:
-        repo, tag = image_name.rsplit(":", 1)
-    else:
-        repo, tag = image_name, "latest"
-
+    repo, tag = (image_name.rsplit(":", 1) if ":" in image_name else (image_name, "latest"))
     auto_update = tag.lower() == "latest"
+
     logger.info(f"Checking {name} ({image_name})...")
     if not auto_update:
         logger.info(f"{name} uses pinned tag '{tag}', skipping update.")
@@ -259,54 +200,34 @@ def update_container(container):
         return
 
     try:
-        client.images.pull(repo, tag=tag)
+        pulled_image = client.images.pull(repo, tag=tag)
+        logger.info(f"Pulled image {repo}:{tag}")
     except Exception as e:
         logger.error(f"Image pull failed for {image_name}: {e}")
         notify(name, "error", extra=str(e))
         return
 
     try:
-        if stack_name:
-            service_name = labels.get("com.docker.swarm.service.name")
-            if not service_name:
-                raise RuntimeError("Unable to resolve Swarm service name")
-            logger.info(f"{name} is part of Swarm stack '{stack_name}'")
-            subprocess.run(["docker", "service", "update", "--force", service_name], check=True)
-
-        elif compose_project and compose_service:
-            logger.info(f"{name} is part of docker-compose project '{compose_project}'")
-            subprocess.run(
-                ["docker", "compose", "-p", compose_project, "up", "-d", "--no-deps", "--force-recreate", compose_service],
-                check=True
-            )
-
+        if compose_dir:
+            logger.info(f"{name} is part of a docker-compose app in {compose_dir}")
+            # Pull and update via compose
+            for cmd in [["docker", "compose", "pull"], ["docker", "compose", "up", "-d", "--no-deps"]]:
+                result = subprocess.run(cmd, cwd=compose_dir, capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr)
+                logger.info(result.stdout)
         else:
+            # Standalone container
             logger.info(f"{name} is a standalone container")
-
-            # Save old image ID before stopping
             old_image_id = container.image.id
-
-            # Pull updated image and capture object
-            try:
-                pulled_image = client.images.pull(repo, tag=tag)
-            except Exception as e:
-                logger.error(f"Failed to pull {repo}:{tag}: {e}")
-                notify(name, "error", extra=str(e))
-                return
-
-            # Stop & remove container
             container.stop()
             container.remove()
-
-            # Run the new container using explicit tag
             client.containers.run(
                 f"{repo}:{tag}",
                 name=name,
                 detach=True,
                 restart_policy=cast(RestartPolicy, {"Name": "unless-stopped"})
             )
-
-            # Remove old image if different
             if old_image_id != pulled_image.id:
                 try:
                     client.images.remove(old_image_id)
@@ -314,9 +235,10 @@ def update_container(container):
                 except Exception as e:
                     logger.warning(f"Failed to remove old image {old_image_id[:12]}: {e}")
 
-            # Notify with correct tag
-            notify(name, "update", f"{repo}:{tag}")
-
+        container.reload()
+        updates_applied = True
+        notify(name, "update", f"{repo}:{tag}")
+        logger.info(f"{name} updated successfully")
 
     except Exception as e:
         logger.error(f"Error updating {name}: {e}")
