@@ -203,6 +203,28 @@ def get_compose_cmd():
         return ["docker-compose"]
     return ["docker", "compose"]
 
+import json
+
+def get_remote_digest(image_ref):
+    cmd = ["docker", "manifest", "inspect", image_ref]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr)
+
+    data = json.loads(result.stdout)
+
+    # multi-arch
+    if "manifests" in data:
+        for m in data["manifests"]:
+            if m["platform"]["architecture"] == "amd64":
+                return m["digest"]
+
+    # single-arch
+    if "Descriptor" in data:
+        return data["Descriptor"]["digest"]
+
+    raise RuntimeError("No digest found")
+
 
 # =========================
 # Update container function
@@ -231,6 +253,7 @@ def update_container(container):
     compose_service = labels.get('com.docker.compose.service')
 
     # Determine image
+    container.reload()
     image_name = container.image.tags[0] if container.image.tags else None
     if not image_name:
         logger.warning(f"Container {name} has no tagged image. Skipping.")
@@ -253,9 +276,24 @@ def update_container(container):
         else:
             # Pull latest if applicable
             if auto_update:
-                logger.info(f"Pulling latest image for {name}...")
-                client.images.pull(repo, tag=tag)
-                new_image = client.images.get(f"{repo}:{tag}")
+                current_digest = container.image.attrs.get("RepoDigests", [None])[0]
+                if not current_digest:
+                    logger.warning(f"{name} has no RepoDigest, skipping")
+                    return
+
+                remote_digest = get_remote_digest(image_name)
+
+                if current_digest.endswith(remote_digest):
+                    logger.info(f"{name} already up to date (digest match)")
+                    notify(name, "up_to_date")
+                    return
+
+                logger.info(f"🆕 Digest drift detected for {name}")
+                logger.info(f"{name}: local={current_digest} remote={remote_digest}")
+
+                if not DRY_RUN:
+                    client.images.pull(repo, tag=tag)
+
             else:
                 logger.info(f"Skipping pull for {name} (custom tag: {tag})")
                 new_image = container.image
