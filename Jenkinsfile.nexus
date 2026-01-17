@@ -9,7 +9,7 @@ pipeline {
         REPO_URL = 'https://github.com/funmicra/Docker-Update.git'
         BRANCH = 'master'
         COMPOSE_PROJECT_NAME = 'docker-update'
-        REGISTRY_URL = "registry.black-crab.cc"
+        REGISTRY_URL = "registry.syndicate"
         IMAGE_NAME   = "docker-update"
         FULL_IMAGE   = "${env.REGISTRY_URL}/${env.IMAGE_NAME}:latest"
     }
@@ -38,7 +38,7 @@ pipeline {
         stage('Authenticate to Registry') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: 'nexus_registry_login',
+                    credentialsId: 'NEXUS_REGISTRY_LOGIN ',
                     usernameVariable: 'REG_USER',
                     passwordVariable: 'REG_PASS'
                 )]) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import docker
+
 import time
 import logging
 import os
@@ -9,283 +9,190 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
 import argparse
-from typing import cast
-from docker.types import RestartPolicy
-import json
+from pathlib import Path
 
 # =========================
 # Environment setup
 # =========================
 load_dotenv()
 HOSTNAME = os.getenv("HOST_MACHINE", "unknown-host")
+STACKS_BASE_DIR = Path(os.getenv("STACKS_BASE_DIR", "/opt/infra/stacks"))
 
 # =========================
 # CLI arguments
 # =========================
 parser = argparse.ArgumentParser()
-parser.add_argument("--dry-run", action="store_true", help="Run in simulation mode (no updates applied)")
-parser.add_argument("--run-once", action="store_true", help="Run a single update cycle and exit")
+parser.add_argument("--dry-run", action="store_true")
+parser.add_argument("--run-once", action="store_true")
 args = parser.parse_args()
+
 DRY_RUN = args.dry_run
 RUN_ONCE = args.run_once
 
 # =========================
 # Configuration
 # =========================
-def to_bool(value):
-    return str(value).lower() in ("1", "true", "yes", "y", "on")
+def to_bool(v):
+    return str(v).lower() in ("1", "true", "yes", "on")
 
 CFG = {
-    "check_interval": int(os.getenv("CHECK_INTERVAL") or 3600),
-    "skip_containers": [c.strip() for c in os.getenv("SKIP_CONTAINERS", "").split(",") if c.strip()],
+    "check_interval": int(os.getenv("CHECK_INTERVAL", 3600)),
+    "allowlist": [s.strip() for s in os.getenv("STACKS_ALLOWLIST", "").split(",") if s.strip()],
+    "denylist": [s.strip() for s in os.getenv("STACKS_DENYLIST", "").split(",") if s.strip()],
     "notifications": {
         "enabled": to_bool(os.getenv("TELEGRAM", "false")),
-        "telegram_bot_token": os.getenv("TELEGRAM_BOT_TOKEN"),
-        "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID")
+        "token": os.getenv("TELEGRAM_BOT_TOKEN"),
+        "chat_id": os.getenv("TELEGRAM_CHAT_ID"),
     },
-    "logging": {
-        "path": os.getenv("LOG_PATH") or "/var/log/Docker-Update.log",
-        "max_bytes": 10_485_760,
-        "backup_count": 5
-    }
 }
 
 # =========================
-# Logging setup
+# Logging
 # =========================
-LOG_DIR = "/app/logs" if os.path.exists("/app") else os.path.join(os.getcwd(), "logs")
+LOG_DIR = "/app/logs" if os.path.exists("/app") else "./logs"
 os.makedirs(LOG_DIR, exist_ok=True)
-LOG_PATH = os.path.join(LOG_DIR, "Docker-Update.log")
 
-logger = logging.getLogger("AutoUpdate")
+logger = logging.getLogger("ComposeAutoUpdate")
 logger.setLevel(logging.INFO)
 
-class HostnameFilter(logging.Filter):
+fmt = logging.Formatter(
+    "%(asctime)s - %(levelname)s - [%(hostname)s] - %(message)s"
+)
+
+class HostFilter(logging.Filter):
     def filter(self, record):
         record.hostname = HOSTNAME
         return True
 
-logger.addFilter(HostnameFilter())
+logger.addFilter(HostFilter())
 
 console = logging.StreamHandler()
-console.setLevel(logging.INFO)
-file_handler = RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=5)
-file_handler.setLevel(logging.INFO)
-
-fmt = logging.Formatter('%(asctime)s - %(levelname)s - [%(hostname)s] - %(message)s')
 console.setFormatter(fmt)
-file_handler.setFormatter(fmt)
 logger.addHandler(console)
+
+file_handler = RotatingFileHandler(
+    f"{LOG_DIR}/Docker-Compose-Update.log", maxBytes=5_000_000, backupCount=5
+)
+file_handler.setFormatter(fmt)
 logger.addHandler(file_handler)
 
 # =========================
-# Docker client
+# Telegram
 # =========================
-client = docker.from_env()
+def notify(stack=None, event="info", extra=None):
+    if not CFG["notifications"]["enabled"]:
+        return
 
-# =========================
-# Telegram notification
-# =========================
-def format_telegram_message(event_type, container_name=None, image=None, extra=None):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    host_info = f"\n🏠 Host: `{HOSTNAME}`"
+    msg = f"🏠 Host: `{HOSTNAME}`\n"
 
-    if event_type == "dry_run":
-        return f"{host_info}\n🧪 *DRY RUN MODE*\n🔍 No changes will be applied.\n🕒 Time: {ts}"
-    if event_type == "update":
-        return f"{host_info}\n🟢 *Update*\n🐳 Container: `{container_name}`\nNew Image: `{image}`\n🕒 Time: {ts}"
-    if event_type == "up_to_date":
-        return f"{host_info}\n✅ *No Update Needed*\n🐳 Container: `{container_name}`\n🕒 Time: {ts}"
-    if event_type == "error":
-        return f"{host_info}\n⚠️ *Error*\n🐳 Container: `{container_name}`\nDetails: `{extra}`\n🕒 Time: {ts}"
-    if event_type == "cleanup":
-        return f"{host_info}\n🧹 *Cleanup*\nReclaimed space: `{extra:.2f} MB`\n🕒 Time: {ts}"
-    return f"{host_info}\nℹ️ *Notification*\n🐳 Container: `{container_name}`\n🕒 Time: {ts}"
+    if event == "dry_run":
+        msg += "🧪 *DRY RUN MODE*\n"
+    elif event == "update":
+        msg += f"🟢 *Updated*\n📦 Stack: `{stack}`\n"
+    elif event == "error":
+        msg += f"⚠️ *Error*\n📦 Stack: `{stack}`\n`{extra}`\n"
+    elif event == "cleanup":
+        msg += f"🧹 *Cleanup*\nReclaimed `{extra:.2f} MB`\n"
 
-def notify(container_name=None, event_type="info", image=None, extra=None):
-    msg = format_telegram_message(event_type, container_name, image, extra)
-    logger.info(msg)
-    if CFG["notifications"]["enabled"] and CFG["notifications"]["telegram_bot_token"]:
-        try:
-            resp = requests.post(
-                f"https://api.telegram.org/bot{CFG['notifications']['telegram_bot_token']}/sendMessage",
-                data={
-                    "chat_id": CFG["notifications"]["telegram_chat_id"],
-                    "text": msg,
-                    "parse_mode": "Markdown"
-                },
-                timeout=10
-            )
-            if resp.status_code != 200:
-                logger.warning(f"[Telegram] Failed to send: {resp.text}")
-        except Exception as e:
-            logger.warning(f"[Telegram] Exception: {e}")
-
-# =========================
-# Helper functions
-# =========================
-def get_local_digest(repo: str, repo_digests: list[str]) -> str | None:
-    for rd in repo_digests:
-        if rd.startswith(f"{repo}@"):
-            return rd.split("@", 1)[1]
-    return None
-
-def get_remote_digest(image_ref):
-    cmd = ["docker", "manifest", "inspect", image_ref]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr)
-    data = json.loads(result.stdout)
-    TARGET_ARCH = os.getenv("TARGET_ARCH", "amd64")
-    if "manifests" in data:
-        for m in data["manifests"]:
-            if m["platform"]["architecture"] == TARGET_ARCH:
-                return m["digest"]
-    raise RuntimeError(f"No digest found for architecture '{TARGET_ARCH}'")
-
-# =========================
-# Update container function
-# =========================
-updates_applied = False
-
-def update_container(container):
-    global updates_applied
-    name = container.name
-
-    if name in CFG["skip_containers"]:
-        logger.info(f"Skipping container {name} (in skip list)")
-        return
-
-    container.reload()
-    labels = container.attrs["Config"].get("Labels", {})
-    compose_dir = labels.get("com.docker.compose.project.working_dir")
-
-    if not container.image.tags:
-        logger.warning(f"Container {name} has no tagged image. Skipping.")
-        return
-
-    image_name = container.image.tags[0]
-    repo, tag = (image_name.rsplit(":", 1) if ":" in image_name else (image_name, "latest"))
-    auto_update = tag.lower() == "latest"
-
-    logger.info(f"Checking {name} ({image_name})...")
-    if not auto_update:
-        logger.info(f"{name} uses pinned tag '{tag}', skipping update.")
-        return
-
-    repo_digests = container.image.attrs.get("RepoDigests", [])
-    local_digest = get_local_digest(repo, repo_digests)
-    if not local_digest:
-        logger.warning(f"{name} has RepoDigests but none match repo '{repo}', skipping.")
-        return
+    msg += f"\n🕒 {ts}"
 
     try:
-        remote_digest = get_remote_digest(image_name)
+        requests.post(
+            f"https://api.telegram.org/bot{CFG['notifications']['token']}/sendMessage",
+            data={
+                "chat_id": CFG["notifications"]["chat_id"],
+                "text": msg,
+                "parse_mode": "Markdown",
+            },
+            timeout=10,
+        )
     except Exception as e:
-        logger.error(f"Failed to fetch remote digest for {image_name}: {e}")
-        notify(name, "error", extra=str(e))
-        return
+        logger.warning(f"Telegram failed: {e}")
 
-    if local_digest == remote_digest:
-        logger.info(f"{name} already up to date (digest match)")
-        notify(name, "up_to_date")
-        return
+# =========================
+# Stack discovery
+# =========================
+def discover_stacks():
+    stacks = []
+    for d in STACKS_BASE_DIR.iterdir():
+        if d.is_dir() and (d / "docker-compose.yaml").exists():
+            stacks.append(d)
+    return stacks
 
-    logger.info(f"🆕 Digest drift detected for {name}")
-    logger.info(f"{name}: local={local_digest} remote={remote_digest}")
+def stack_allowed(name):
+    if CFG["allowlist"] and name not in CFG["allowlist"]:
+        return False
+    if name in CFG["denylist"]:
+        return False
+    return True
+
+# =========================
+# Stack update logic
+# =========================
+def update_stack(stack_path: Path):
+    name = stack_path.name
+    logger.info(f"📦 Processing stack: {name}")
 
     if DRY_RUN:
-        logger.info(f"[DRY-RUN] Would pull and update {name}")
-        notify(name, "would_update", image_name)
+        logger.info(f"[DRY-RUN] docker compose pull ({name})")
+        logger.info(f"[DRY-RUN] docker compose up -d ({name})")
         return
 
-    try:
-        pulled_image = client.images.pull(repo, tag=tag)
-        logger.info(f"Pulled image {repo}:{tag}")
-    except Exception as e:
-        logger.error(f"Image pull failed for {image_name}: {e}")
-        notify(name, "error", extra=str(e))
-        return
+    subprocess.run(
+        ["docker", "compose", "pull"],
+        cwd=stack_path,
+        check=True,
+    )
 
-    try:
-        if compose_dir:
-            logger.info(f"{name} is part of a docker-compose app in {compose_dir}")
-            # Pull and update via compose
-            for cmd in [["docker", "compose", "pull"], ["docker", "compose", "up", "-d", "--no-deps"]]:
-                result = subprocess.run(cmd, cwd=compose_dir, capture_output=True, text=True)
-                if result.returncode != 0:
-                    raise RuntimeError(result.stderr)
-                logger.info(result.stdout)
-        else:
-            # Standalone container
-            logger.info(f"{name} is a standalone container")
-            old_image_id = container.image.id
-            container.stop()
-            container.remove()
-            client.containers.run(
-                f"{repo}:{tag}",
-                name=name,
-                detach=True,
-                restart_policy=cast(RestartPolicy, {"Name": "unless-stopped"})
-            )
-            if old_image_id != pulled_image.id:
-                try:
-                    client.images.remove(old_image_id)
-                    logger.info(f"Removed old image {old_image_id[:12]} for {name}")
-                except Exception as e:
-                    logger.warning(f"Failed to remove old image {old_image_id[:12]}: {e}")
+    subprocess.run(
+        ["docker", "compose", "up", "-d"],
+        cwd=stack_path,
+        check=True,
+    )
 
-        container.reload()
-        updates_applied = True
-        notify(name, "update", f"{repo}:{tag}")
-        logger.info(f"{name} updated successfully")
-
-    except Exception as e:
-        logger.error(f"Error updating {name}: {e}")
-        notify(name, "error", extra=str(e))
+    notify(name, "update")
 
 # =========================
-# Cleanup unused images
+# Cleanup
 # =========================
-def cleanup_unused_images():
-    try:
-        logger.info("🧹 Pruning unused images…")
-        unused = client.images.prune(filters={"dangling": True})
-        reclaimed = unused.get("SpaceReclaimed", 0)
-        if reclaimed > 0:
-            size_mb = reclaimed / (1024 * 1024)
-            logger.info(f"Reclaimed {size_mb:.2f} MB from unused images.")
-            notify("Docker Images", "cleanup", extra=size_mb)
-    except Exception as e:
-        logger.error(f"Failed pruning images: {e}")
-        notify("Docker Images", "error", extra=str(e))
+def cleanup_images():
+    result = subprocess.run(
+        ["docker", "image", "prune", "-f"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        logger.info("🧹 Image prune complete")
 
 # =========================
 # Main loop
 # =========================
 def main():
-    try:
-        while True:
-            containers = client.containers.list()
-            for c in containers:
-                update_container(c)
+    if DRY_RUN:
+        notify(event="dry_run")
 
-            if updates_applied:
-                cleanup_unused_images()
-            else:
-                logger.info("No updates applied; skipping image prune.")
+    while True:
+        for stack in discover_stacks():
+            name = stack.name
+            if not stack_allowed(name):
+                logger.info(f"Skipping stack {name}")
+                continue
 
-            if RUN_ONCE:
-                logger.info("Run-once mode: exiting after single cycle.")
-                return
+            try:
+                update_stack(stack)
+            except Exception as e:
+                logger.error(f"{name} failed: {e}")
+                notify(name, "error", str(e))
 
-            logger.info(f"💤 Sleeping {CFG['check_interval']} seconds…")
-            time.sleep(CFG["check_interval"])
+        cleanup_images()
 
-    except KeyboardInterrupt:
-        logger.info("Exiting Docker auto-update script.")
+        if RUN_ONCE:
+            logger.info("Run-once mode enabled. Exiting.")
+            return
+
+        logger.info(f"💤 Sleeping {CFG['check_interval']} seconds")
+        time.sleep(CFG["check_interval"])
 
 if __name__ == "__main__":
-    if DRY_RUN:
-        notify(event_type="dry_run")
     main()
