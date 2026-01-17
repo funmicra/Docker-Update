@@ -2,7 +2,6 @@
 import docker
 import time
 import logging
-import sys
 import os
 import subprocess
 import requests
@@ -10,12 +9,15 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from dotenv import load_dotenv
 import argparse
-import socket
 import shutil
+from typing import cast
+from docker.types import RestartPolicy
+import json
 
-
+# =========================
+# Environment setup
+# =========================
 load_dotenv()
-
 HOSTNAME = os.getenv("HOST_MACHINE", "unknown-host")
 
 # =========================
@@ -25,7 +27,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--dry-run", action="store_true", help="Run in simulation mode (no updates applied)")
 parser.add_argument("--run-once", action="store_true", help="Run a single update cycle and exit")
 args = parser.parse_args()
-
 DRY_RUN = args.dry_run
 RUN_ONCE = args.run_once
 
@@ -37,9 +38,9 @@ def to_bool(value):
 
 CFG = {
     "check_interval": (
-    int(os.getenv("CHECK_INTERVAL").strip())
-    if os.getenv("CHECK_INTERVAL") and os.getenv("CHECK_INTERVAL").strip().isdigit()
-    else 3600
+        int(os.getenv("CHECK_INTERVAL").strip())
+        if os.getenv("CHECK_INTERVAL") and os.getenv("CHECK_INTERVAL").strip().isdigit()
+        else 3600
     ),
     "skip_containers": [
         c.strip() for c in os.getenv("SKIP_CONTAINERS", "").split(",") if c.strip()
@@ -52,7 +53,7 @@ CFG = {
     },
     "logging": {
         "path": os.getenv("LOG_PATH") or "/var/log/Docker-Update.log",
-        "max_bytes": 10485760,
+        "max_bytes": 10_485_760,
         "backup_count": 5
     }
 }
@@ -60,42 +61,29 @@ CFG = {
 # =========================
 # Logging setup
 # =========================
-# Smart logging path selection
-if os.path.exists("/app"):
-    LOG_DIR = "/app/logs"
-else:
-    LOG_DIR = os.path.join(os.getcwd(), "logs")
-
+LOG_DIR = "/app/logs" if os.path.exists("/app") else os.path.join(os.getcwd(), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
-
 LOG_PATH = os.path.join(LOG_DIR, "Docker-Update.log")
 
 logger = logging.getLogger("AutoUpdate")
 logger.setLevel(logging.INFO)
+
 class HostnameFilter(logging.Filter):
     def filter(self, record):
         record.hostname = HOSTNAME
         return True
-
 logger.addFilter(HostnameFilter())
 
 console = logging.StreamHandler()
 console.setLevel(logging.INFO)
-
-file_handler = RotatingFileHandler(
-    LOG_PATH,
-    maxBytes=5_000_000,
-    backupCount=5
-)
+file_handler = RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=5)
 file_handler.setLevel(logging.INFO)
 
 fmt = logging.Formatter('%(asctime)s - %(levelname)s - [%(hostname)s] - %(message)s')
 console.setFormatter(fmt)
 file_handler.setFormatter(fmt)
-
 logger.addHandler(console)
 logger.addHandler(file_handler)
-
 
 # =========================
 # Docker client
@@ -157,10 +145,10 @@ def format_telegram_message(event_type, container_name=None, image=None, extra=N
         f"🐳 Container: `{container_name}`\n"
         f"🕒 Time: {ts}"
     )
+
 def notify(container_name=None, event_type="info", image=None, extra=None):
     msg = format_telegram_message(event_type, container_name, image, extra)
     logger.info(msg)
-
     if CFG["notifications"]["enabled"] and CFG["notifications"]["telegram_bot_token"]:
         try:
             resp = requests.post(
@@ -177,250 +165,158 @@ def notify(container_name=None, event_type="info", image=None, extra=None):
         except Exception as e:
             logger.warning(f"[Telegram] Exception: {e}")
 
-
 # =========================
 # Helper functions
 # =========================
-def get_image_basename(container):
-    tags = container.image.tags
-    if not tags:
-        raise ValueError("Container image has no tags (dangling <none>:<none>)")
-    return tags[0].split(":")[0]
+def get_local_digest(repo: str, repo_digests: list[str]) -> str | None:
+    for rd in repo_digests:
+        if rd.startswith(f"{repo}@"):
+            return rd.split("@", 1)[1]
+    return None
 
 def resolve_image_id(repo, tag):
-    """
-    Resolve the image ID that repo:tag currently points to.
-    """
-    image = client.images.get(f"{repo}:{tag}")
-    return image.id
-
-def get_compose_cmd():
-    """
-    Detect whether docker-compose (v1) or docker compose (v2) is available.
-    Returns the command as a list.
-    """
-    if shutil.which("docker-compose"):
-        return ["docker-compose"]
-    return ["docker", "compose"]
-
-import json
+    return client.images.get(f"{repo}:{tag}").id
 
 def get_remote_digest(image_ref):
     cmd = ["docker", "manifest", "inspect", image_ref]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr)
-
     data = json.loads(result.stdout)
+    TARGET_ARCH = os.getenv("TARGET_ARCH", "amd64")
 
-    # multi-arch
+    # multi-arch manifest
     if "manifests" in data:
         for m in data["manifests"]:
-            if m["platform"]["architecture"] == "amd64":
+            if m["platform"]["architecture"] == TARGET_ARCH:
                 return m["digest"]
 
-    # single-arch
+    # single-arch fallback
     if "Descriptor" in data:
         return data["Descriptor"]["digest"]
 
-    raise RuntimeError("No digest found")
-
+    raise RuntimeError(f"No digest found for architecture '{TARGET_ARCH}'")
 
 # =========================
 # Update container function
 # =========================
-last_check_time = {}
+updates_applied = False
 
 def update_container(container):
-    global last_check_time
+    global updates_applied
     name = container.name
-    
-    # Rate limiting per container
-    now = time.time()
-    if name in last_check_time and now - last_check_time[name] < CFG["check_interval"]:
-        return
-    last_check_time[name] = now
 
-    # Skip-list logic
     if name in CFG["skip_containers"]:
         logger.info(f"Skipping container {name} (in skip list)")
         return
 
-    # Labels for Swarm/Compose detection
-    labels = container.attrs['Config'].get('Labels', {})
-    stack_name = labels.get('com.docker.stack.namespace')
-    compose_project = labels.get('com.docker.compose.project')
-    compose_service = labels.get('com.docker.compose.service')
-
-    # Determine image
     container.reload()
-    image_name = container.image.tags[0] if container.image.tags else None
-    if not image_name:
+    labels = container.attrs["Config"].get("Labels", {})
+    stack_name = labels.get("com.docker.stack.namespace")
+    compose_project = labels.get("com.docker.compose.project")
+    compose_service = labels.get("com.docker.compose.service")
+
+    if not container.image.tags:
         logger.warning(f"Container {name} has no tagged image. Skipping.")
         return
 
-    # Determine repo and tag
+    image_name = container.image.tags[0]
     if ":" in image_name:
         repo, tag = image_name.rsplit(":", 1)
     else:
         repo, tag = image_name, "latest"
 
-    auto_update = tag.lower() == "latest" or tag.isdigit()
+    auto_update = tag.lower() == "latest"
+    logger.info(f"Checking {name} ({image_name})...")
+    if not auto_update:
+        logger.info(f"{name} uses pinned tag '{tag}', skipping update.")
+        return
+
+    repo_digests = container.image.attrs.get("RepoDigests", [])
+    local_digest = get_local_digest(repo, repo_digests)
+    if not local_digest:
+        logger.warning(f"{name} has RepoDigests but none match repo '{repo}', skipping.")
+        return
 
     try:
-        logger.info(f"Checking {name} ({image_name})...")
+        remote_digest = get_remote_digest(image_name)
+    except Exception as e:
+        logger.error(f"Failed to fetch remote digest for {image_name}: {e}")
+        notify(name, "error", extra=str(e))
+        return
 
-        if DRY_RUN:
-            logger.info(f"[DRY-RUN] Would pull latest image for {name}")
-            new_image = container.image
-        else:
-            # Pull latest if applicable
-            if auto_update:
-                current_digest = container.image.attrs.get("RepoDigests", [None])[0]
-                if not current_digest:
-                    logger.warning(f"{name} has no RepoDigest, skipping")
-                    return
+    if local_digest == remote_digest:
+        logger.info(f"{name} already up to date (digest match)")
+        notify(name, "up_to_date")
+        return
 
-                remote_digest = get_remote_digest(image_name)
+    logger.info(f"🆕 Digest drift detected for {name}")
+    logger.info(f"{name}: local={local_digest} remote={remote_digest}")
 
-                if current_digest.endswith(remote_digest):
-                    logger.info(f"{name} already up to date (digest match)")
-                    notify(name, "up_to_date")
-                    return
+    if DRY_RUN:
+        logger.info(f"[DRY-RUN] Would pull and update {name}")
+        notify(name, "would_update", image_name)
+        return
 
-                logger.info(f"🆕 Digest drift detected for {name}")
-                logger.info(f"{name}: local={current_digest} remote={remote_digest}")
+    try:
+        client.images.pull(repo, tag=tag)
+    except Exception as e:
+        logger.error(f"Image pull failed for {image_name}: {e}")
+        notify(name, "error", extra=str(e))
+        return
 
-                if not DRY_RUN:
-                    client.images.pull(repo, tag=tag)
-
-            else:
-                logger.info(f"Skipping pull for {name} (custom tag: {tag})")
-                new_image = container.image
-
-        # Up-to-date check
-        if auto_update:
-            try:
-                latest_id = resolve_image_id(repo, tag)
-            except docker.errors.ImageNotFound:
-                logger.error(f"Unable to resolve {repo}:{tag}")
-                notify(name, "error", extra=f"Cannot resolve {repo}:{tag}")
-                return
-
-            current_id = container.image.id
-            latest_id = client.images.get(f"{repo}:{tag}").id
-
-            if current_id == latest_id:
-                logger.info(f"{name} is already running the latest image.")
-                notify(name, "up_to_date")
-                return
-
-            logger.info(f"🆕 Image drift detected for {name}")
-            logger.info(f"{name}: current={current_id[:12]} latest={latest_id[:12]}")
-        else:
-            logger.info(f"{name} uses pinned tag '{tag}', skipping update.")
-            return
-
-        logger.info(f"🆕 Update needed for {name}")
-        notify(name, "update", image_name)
-
-        # ==================== SWARM ====================
+    try:
         if stack_name:
-            service_name = f"{stack_name}_{name}"
-            logger.info(f"{name} is part of Swarm stack '{stack_name}'.")
+            service_name = labels.get("com.docker.swarm.service.name")
+            if not service_name:
+                raise RuntimeError("Unable to resolve Swarm service name")
+            logger.info(f"{name} is part of Swarm stack '{stack_name}'")
+            subprocess.run(["docker", "service", "update", "--force", service_name], check=True)
 
-            if DRY_RUN:
-                logger.info(f"[DRY-RUN] Would run: docker service update --image {image_name} {service_name}")
+        elif compose_project and compose_service:
+            logger.info(f"{name} is part of docker-compose project '{compose_project}'")
+            subprocess.run(
+                ["docker", "compose", "-p", compose_project, "up", "-d", "--no-deps", "--force-recreate", compose_service],
+                check=True
+            )
+
+        else:
+            logger.info(f"{name} is a standalone container")
+
+            # Save old image ID before stopping
+            old_image_id = container.image.id
+
+            # Pull updated image and capture object
+            try:
+                pulled_image = client.images.pull(repo, tag=tag)
+            except Exception as e:
+                logger.error(f"Failed to pull {repo}:{tag}: {e}")
+                notify(name, "error", extra=str(e))
                 return
 
-            cmd = ["docker", "service", "update", "--image", image_name, service_name]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # Stop & remove container
+            container.stop()
+            container.remove()
 
-            if result.returncode == 0:
-                logger.info(f"Stack service {service_name} updated successfully.")
-                notify(service_name, "update", image_name)
-            else:
-                logger.error(f"Service update failed: {result.stderr}")
-                notify(service_name, "error", extra=result.stderr)
-            return
+            # Run the new container using explicit tag
+            client.containers.run(
+                f"{repo}:{tag}",
+                name=name,
+                detach=True,
+                restart_policy=cast(RestartPolicy, {"Name": "unless-stopped"})
+            )
 
-        # ==================== COMPOSE ====================
-        if compose_project and compose_service:
-            logger.info(f"{name} is part of docker-compose project '{compose_project}'.")
+            # Remove old image if different
+            if old_image_id != pulled_image.id:
+                try:
+                    client.images.remove(old_image_id)
+                    logger.info(f"Removed old image {old_image_id[:12]} for {name}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove old image {old_image_id[:12]}: {e}")
 
-            compose_cmd = get_compose_cmd()
+            # Notify with correct tag
+            notify(name, "update", f"{repo}:{tag}")
 
-            if DRY_RUN:
-                logger.info(
-                    f"[DRY-RUN] Would run: {' '.join(compose_cmd)} "
-                    f"-p {compose_project} pull {compose_service}"
-                )
-                logger.info(
-                    f"[DRY-RUN] Would run: {' '.join(compose_cmd)} "
-                    f"-p {compose_project} up -d --no-deps {compose_service}"
-                )
-                return
-
-            # Pull
-            cmd_pull = compose_cmd + ["-p", compose_project, "pull", compose_service]
-            result_pull = subprocess.run(cmd_pull, capture_output=True, text=True)
-
-            if result_pull.returncode != 0:
-                logger.error(f"Compose pull failed: {result_pull.stderr.strip()}")
-                notify(name, "error", extra=result_pull.stderr.strip())
-                return
-
-            # Update
-            cmd_up = compose_cmd + [
-                "-p", compose_project,
-                "up", "-d", "--no-deps", compose_service
-            ]
-            result_up = subprocess.run(cmd_up, capture_output=True, text=True)
-
-            if result_up.returncode == 0:
-                logger.info(
-                    f"Compose service '{compose_service}' updated successfully."
-                )
-                notify(name, "update", image_name)
-            else:
-                logger.error(f"Compose up failed: {result_up.stderr.strip()}")
-                notify(name, "error", extra=result_up.stderr.strip())
-
-            return
-
-
-        # ==================== STANDALONE ====================
-        ports = container.attrs['HostConfig']['PortBindings']
-        env = container.attrs['Config']['Env']
-        mounts = container.attrs.get('Mounts', [])
-        volumes = {
-            m['Destination']: {
-                'bind': m['Destination'],
-                'mode': m.get('Mode', 'rw')
-            } for m in mounts if "Destination" in m
-        }
-        restart_policy = container.attrs['HostConfig']['RestartPolicy']
-        network = container.attrs['HostConfig']['NetworkMode']
-
-        if DRY_RUN:
-            logger.info(f"[DRY-RUN] Would stop/remove container {name} and recreate with {image_name}")
-            return
-
-        # Stop, remove, recreate container
-        container.stop()
-        container.remove()
-        client.containers.run(
-            image_name,
-            name=name,
-            detach=True,
-            ports={k: int(v[0]['HostPort']) for k, v in ports.items()} if ports else None,
-            environment=env,
-            volumes=volumes,
-            restart_policy=restart_policy,
-            network=network
-        )
-        logger.info(f"{name} updated successfully!")
-        notify(name, "update", image_name)
 
     except Exception as e:
         logger.error(f"Error updating {name}: {e}")
@@ -447,31 +343,27 @@ def cleanup_unused_images():
 # =========================
 def main():
     try:
-        containers = client.containers.list()
-        for c in containers:
-            update_container(c)
-
-        cleanup_unused_images()
-
-
-        if RUN_ONCE:
-            logger.info("Run-once mode: exiting after single cycle.")
-            return
-        
         while True:
-            logger.info(f"💤 Sleeping {CFG['check_interval']} seconds…")
-            time.sleep(CFG["check_interval"])
-
             containers = client.containers.list()
             for c in containers:
                 update_container(c)
 
-            cleanup_unused_images()
-    
+            if updates_applied:
+                cleanup_unused_images()
+            else:
+                logger.info("No updates applied; skipping image prune.")
+
+            if RUN_ONCE:
+                logger.info("Run-once mode: exiting after single cycle.")
+                return
+
+            logger.info(f"💤 Sleeping {CFG['check_interval']} seconds…")
+            time.sleep(CFG["check_interval"])
+
     except KeyboardInterrupt:
         logger.info("Exiting Docker auto-update script.")
 
 if __name__ == "__main__":
     if DRY_RUN:
-        notify(event_type="dry_run")  # global dry-run banner
+        notify(event_type="dry_run")
     main()
