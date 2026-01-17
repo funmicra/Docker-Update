@@ -254,7 +254,8 @@ def update_container(container):
             # Pull latest if applicable
             if auto_update:
                 logger.info(f"Pulling latest image for {name}...")
-                new_image = client.images.pull(repo, tag=tag)
+                client.images.pull(repo, tag=tag)
+                new_image = client.images.get(f"{repo}:{tag}")
             else:
                 logger.info(f"Skipping pull for {name} (custom tag: {tag})")
                 new_image = container.image
@@ -269,6 +270,7 @@ def update_container(container):
                 return
 
             current_id = container.image.id
+            latest_id = client.images.get(f"{repo}:{tag}").id
 
             if current_id == latest_id:
                 logger.info(f"{name} is already running the latest image.")
