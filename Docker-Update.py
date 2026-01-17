@@ -169,30 +169,57 @@ def cleanup_images():
 # Main loop
 # =========================
 def main():
-    if DRY_RUN:
-        notify(event="dry_run")
+    global updates_applied
+    try:
+        updated_containers = []
+        skipped_containers = []
+        up_to_date_containers = []
+        failed_containers = []
 
-    while True:
-        for stack in discover_stacks():
-            name = stack.name
-            if not stack_allowed(name):
-                logger.info(f"Skipping stack {name}")
-                continue
+        while True:
+            containers = client.containers.list()
 
-            try:
-                update_stack(stack)
-            except Exception as e:
-                logger.error(f"{name} failed: {e}")
-                notify(name, "error", str(e))
+            for c in containers:
+                try:
+                    prev_updates = updates_applied
+                    update_container(c)
+                    if updates_applied and not prev_updates:
+                        updated_containers.append(c.name)
+                    elif not updates_applied:
+                        up_to_date_containers.append(c.name)
+                except Exception as e:
+                    failed_containers.append(c.name)
+                    logger.error(f"Unhandled error updating {c.name}: {e}")
+                    notify(c.name, "error", extra=str(e))
 
-        cleanup_images()
+            if updates_applied:
+                cleanup_unused_images()
 
-        if RUN_ONCE:
-            logger.info("Run-once mode enabled. Exiting.")
-            return
+            # Summary logging & Telegram
+            logger.info("===== Update Summary =====")
+            logger.info(f"Updated: {updated_containers}")
+            logger.info(f"Skipped / pinned: {skipped_containers}")
+            logger.info(f"Already up-to-date: {up_to_date_containers}")
+            logger.info(f"Failed: {failed_containers}")
+            logger.info("===========================")
 
-        logger.info(f"💤 Sleeping {CFG['check_interval']} seconds")
-        time.sleep(CFG["check_interval"])
+            if CFG["notifications"]["enabled"]:
+                summary_msg = (
+                    f"🏁 Docker Auto-Update Summary\n"
+                    f"Updated: {', '.join(updated_containers) or 'None'}\n"
+                    f"Skipped / pinned: {', '.join(skipped_containers) or 'None'}\n"
+                    f"Up-to-date: {', '.join(up_to_date_containers) or 'None'}\n"
+                    f"Failed: {', '.join(failed_containers) or 'None'}"
+                )
+                notify(event_type="info", extra=summary_msg)
 
-if __name__ == "__main__":
-    main()
+            if RUN_ONCE:
+                logger.info("Run-once mode: exiting after single cycle.")
+                return
+
+            logger.info(f"💤 Sleeping {CFG['check_interval']} seconds…")
+            time.sleep(CFG["check_interval"])
+
+    except KeyboardInterrupt:
+        logger.info("Exiting Docker auto-update script.")
+
